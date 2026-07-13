@@ -4,6 +4,7 @@
 #include <Adafruit_ILI9341.h>
 #include <esp_camera.h>
 #include <esp_heap_caps.h>
+#include <esp_heap_caps.h>
 
 #include "pins.h"
 
@@ -46,6 +47,12 @@ static const uint32_t PREVIEW_HOLD_MS = 1500; // how long to show the frozen cap
 
 static SPIClass tftSPI(FSPI);
 static Adafruit_ILI9341 tft(&tftSPI, TFT_DC_PIN, TFT_CS_PIN, TFT_RST_PIN);
+static HardwareSerial printerSerial(1);
+
+enum AppState { STATE_LIVE, STATE_CAPTURED, STATE_PRINTING };
+static AppState appState = STATE_LIVE;
+static camera_fb_t *capturedFrame = nullptr;
+static uint32_t capturedAtMs = 0;
 static HardwareSerial printerSerial(1);
 
 enum AppState { STATE_LIVE, STATE_CAPTURED, STATE_PRINTING };
@@ -124,6 +131,20 @@ static bool initCamera() {
 }
 
 static void blitFrameToTFT(camera_fb_t *fb) {
+  // Reverted to the per-pixel path: the bulk writePixels(bigEndian=true)
+  // version was never actually verified on hardware before steps 5/6 built
+  // on top of it, and turned out to render nothing at all. This is slower
+  // (visible flicker/tearing) but confirmed working — swap camera's
+  // big-endian RGB565 bytes to what Adafruit_SPITFT expects, then blit.
+  uint16_t *pixels = (uint16_t *)fb->buf;
+  tft.swapBytes(pixels, fb->width * fb->height);
+  tft.drawRGBBitmap(0, 0, pixels, fb->width, fb->height);
+}
+
+static uint32_t frameCount = 0;
+static uint32_t frameGetFailures = 0;
+
+static void blitFrameToTFT(camera_fb_t *fb) {
   // OV2640 RGB565 output is big-endian; ESP32 is little-endian, so a
   // straight cast to uint16_t* scrambles colors — swap in place first.
   uint16_t *pixels = (uint16_t *)fb->buf;
@@ -139,6 +160,122 @@ static void renderCameraFrame() {
   }
   blitFrameToTFT(fb);
   esp_camera_fb_return(fb);
+  frameCount++;
+}
+
+// The sensor free-runs into its DMA buffer even when idle, so the first
+// fb_get() after a period of no captures returns a stale frame from
+// before the button press. Throw one away, then grab a fresh one.
+static camera_fb_t *captureFreshFrame() {
+  camera_fb_t *stale = esp_camera_fb_get();
+  if (stale) {
+    esp_camera_fb_return(stale);
+  }
+  return esp_camera_fb_get();
+}
+
+static void drawStatusBanner(const char *text) {
+  int16_t barHeight = 24;
+  tft.fillRect(0, tft.height() - barHeight, tft.width(), barHeight, ILI9341_BLACK);
+  tft.setCursor(4, tft.height() - barHeight + 4);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(2);
+  tft.print(text);
+}
+
+static void initPrinter() {
+  printerSerial.begin(PRINTER_BAUD, SERIAL_8N1, PRINTER_RX_PIN, PRINTER_TX_PIN);
+  pinMode(PRINTER_DTR_PIN, INPUT); // busy/flow-control line, active meaning TBD — just observing for now
+  printerSerial.write(0x1B); // ESC
+  printerSerial.write('@');  // @ — initialize printer
+}
+
+static inline uint8_t clampByte(int v) {
+  if (v < 0) return 0;
+  if (v > 255) return 255;
+  return (uint8_t)v;
+}
+
+// Camera RGB565 bytes are big-endian in memory (see blitFrameToTFT).
+static inline uint16_t readFramePixel(camera_fb_t *fb, int x, int y) {
+  int idx = (y * fb->width + x) * 2;
+  return (fb->buf[idx] << 8) | fb->buf[idx + 1];
+}
+
+static void printPhoto(camera_fb_t *fb) {
+  int printHeight = PRINTER_WIDTH_DOTS * fb->height / fb->width;
+
+  uint8_t *gray = (uint8_t *)heap_caps_malloc(PRINTER_WIDTH_DOTS * printHeight, MALLOC_CAP_SPIRAM);
+  if (!gray) {
+    Serial.println("PRINTER: out of memory building print buffer, skipping print");
+    return;
+  }
+
+  // Nearest-neighbor scale + grayscale (standard luma weights).
+  for (int y = 0; y < printHeight; y++) {
+    int srcY = y * fb->height / printHeight;
+    for (int x = 0; x < PRINTER_WIDTH_DOTS; x++) {
+      int srcX = x * fb->width / PRINTER_WIDTH_DOTS;
+      uint16_t px = readFramePixel(fb, srcX, srcY);
+      uint8_t r = ((px >> 11) & 0x1F) * 255 / 31;
+      uint8_t g = ((px >> 5) & 0x3F) * 255 / 63;
+      uint8_t b = (px & 0x1F) * 255 / 31;
+      gray[y * PRINTER_WIDTH_DOTS + x] = (r * 299 + g * 587 + b * 114) / 1000;
+    }
+  }
+
+  // Floyd-Steinberg dithering to 1-bit black/white — thermal printers have
+  // no grayscale, so dithering keeps detail that a hard threshold would lose.
+  for (int y = 0; y < printHeight; y++) {
+    for (int x = 0; x < PRINTER_WIDTH_DOTS; x++) {
+      int i = y * PRINTER_WIDTH_DOTS + x;
+      uint8_t oldPixel = gray[i];
+      uint8_t newPixel = oldPixel < 128 ? 0 : 255;
+      int16_t error = (int16_t)oldPixel - newPixel;
+      gray[i] = newPixel;
+      if (x + 1 < PRINTER_WIDTH_DOTS)
+        gray[i + 1] = clampByte(gray[i + 1] + error * 7 / 16);
+      if (y + 1 < printHeight) {
+        if (x > 0)
+          gray[i + PRINTER_WIDTH_DOTS - 1] = clampByte(gray[i + PRINTER_WIDTH_DOTS - 1] + error * 3 / 16);
+        gray[i + PRINTER_WIDTH_DOTS] = clampByte(gray[i + PRINTER_WIDTH_DOTS] + error * 5 / 16);
+        if (x + 1 < PRINTER_WIDTH_DOTS)
+          gray[i + PRINTER_WIDTH_DOTS + 1] = clampByte(gray[i + PRINTER_WIDTH_DOTS + 1] + error * 1 / 16);
+      }
+    }
+  }
+
+  Serial.printf("PRINTER: DTR pin reads %d before send\n", digitalRead(PRINTER_DTR_PIN));
+
+  // ESC/POS raster bit image: GS v 0 m xL xH yL yH [data]
+  printerSerial.write(0x1D);
+  printerSerial.write('v');
+  printerSerial.write('0');
+  printerSerial.write((uint8_t)0); // m = normal
+  printerSerial.write((uint8_t)(PRINTER_WIDTH_BYTES & 0xFF));
+  printerSerial.write((uint8_t)((PRINTER_WIDTH_BYTES >> 8) & 0xFF));
+  printerSerial.write((uint8_t)(printHeight & 0xFF));
+  printerSerial.write((uint8_t)((printHeight >> 8) & 0xFF));
+
+  uint8_t rowBuf[PRINTER_WIDTH_BYTES];
+  for (int y = 0; y < printHeight; y++) {
+    memset(rowBuf, 0, sizeof(rowBuf));
+    for (int x = 0; x < PRINTER_WIDTH_DOTS; x++) {
+      if (gray[y * PRINTER_WIDTH_DOTS + x] == 0) { // black dot
+        rowBuf[x / 8] |= 0x80 >> (x % 8);
+      }
+    }
+    printerSerial.write(rowBuf, PRINTER_WIDTH_BYTES);
+  }
+
+  printerSerial.write('\n');
+  printerSerial.write('\n');
+  printerSerial.write('\n'); // feed clear of the tear bar
+
+  Serial.printf("PRINTER: DTR pin reads %d after send\n", digitalRead(PRINTER_DTR_PIN));
+  Serial.printf("PRINTER: photo printed (%dx%d dots)\n", PRINTER_WIDTH_DOTS, printHeight);
+
+  heap_caps_free(gray);
   frameCount++;
 }
 
@@ -277,6 +414,9 @@ void setup() {
 
   initPrinter();
   Serial.println("PRINTER: UART init done");
+
+  initPrinter();
+  Serial.println("PRINTER: UART init done");
 }
 
 void loop() {
@@ -318,11 +458,49 @@ void loop() {
     Serial.println("STATE: print done, back to live preview");
     appState = STATE_LIVE;
     break;
+  bool buttonState = digitalRead(BUTTON1_PIN) == HIGH;
+  bool buttonPressedEdge = buttonState && !lastButtonState;
+  lastButtonState = buttonState;
+
+  switch (appState) {
+  case STATE_LIVE:
+    if (cameraReady) {
+      renderCameraFrame();
+    }
+    if (buttonPressedEdge && cameraReady) {
+      capturedFrame = captureFreshFrame();
+      if (capturedFrame) {
+        blitFrameToTFT(capturedFrame);
+        capturedAtMs = millis();
+        appState = STATE_CAPTURED;
+        Serial.println("STATE: captured, showing preview");
+      } else {
+        Serial.println("STATE: capture failed, staying live");
+      }
+    }
+    break;
+
+  case STATE_CAPTURED:
+    if (millis() - capturedAtMs >= PREVIEW_HOLD_MS) {
+      drawStatusBanner("PRINTING...");
+      appState = STATE_PRINTING;
+    }
+    break;
+
+  case STATE_PRINTING:
+    printPhoto(capturedFrame);
+    esp_camera_fb_return(capturedFrame);
+    capturedFrame = nullptr;
+    Serial.println("STATE: print done, back to live preview");
+    appState = STATE_LIVE;
+    break;
   }
 
   uint32_t now = millis();
   if (now - lastBeat >= 1000) {
     lastBeat = now;
+    Serial.printf("heartbeat t=%lu ms, frames=%lu, fb_get failures=%lu\n", now,
+                  frameCount, frameGetFailures);
     Serial.printf("heartbeat t=%lu ms, frames=%lu, fb_get failures=%lu\n", now,
                   frameCount, frameGetFailures);
   }
