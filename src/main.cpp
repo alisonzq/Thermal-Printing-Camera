@@ -172,6 +172,13 @@ static void initPrinter() {
   pinMode(PRINTER_DTR_PIN, INPUT); // busy/flow-control line, active meaning TBD — just observing for now
   printerSerial.write(0x1B); // ESC
   printerSerial.write('@');  // @ — initialize printer
+
+  // ESC* bit-image tests came out as repeating Chinese/GBK glyphs instead
+  // of graphics — consistent with the printer defaulting to double-byte
+  // Kanji character mode and never treating ESC* as a command at all.
+  // FS . is the standard ESC/POS command to force single-byte mode.
+  printerSerial.write(0x1C); // FS
+  printerSerial.write('.');  // . — cancel Kanji/double-byte character mode
 }
 
 static inline uint8_t clampByte(int v) {
