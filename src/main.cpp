@@ -2,22 +2,28 @@
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
+#include <esp_camera.h>
+#include <base64.h>
 
 #include "pins.h"
 
 // Step 1: blink/serial-print bring-up (heartbeat + shutter button) — done.
-// Step 2 of the build order in CLAUDE.md: bring up the TFT alone (SPI init,
-// draw test pattern). No touch controller assumed.
+// Step 2: TFT alone, SPI init + test pattern — done.
+// Step 3 of the build order in CLAUDE.md: bring up the camera alone.
+// Shutter button press triggers a JPEG capture, dumped as base64 over
+// serial (marked with CAM:BEGIN/CAM:END) so it can be decoded and viewed
+// on a PC without SD or the TFT-render step (step 4).
 //
 // TFT_DC_PIN == STATUS_LED_PIN (GPIO2): the ILI9341 library now owns that
-// pin and toggles it on every SPI transfer, so the old heartbeat LED blink
-// is gone — the onboard IO2 LED will just flicker along with display
-// traffic (cosmetic only, per CLAUDE.md).
+// pin and toggles it on every SPI transfer, so there's no manual heartbeat
+// LED blink — the onboard IO2 LED just flickers along with display traffic
+// (cosmetic only, per CLAUDE.md).
 
 static SPIClass tftSPI(FSPI);
 static Adafruit_ILI9341 tft(&tftSPI, TFT_DC_PIN, TFT_CS_PIN, TFT_RST_PIN);
 
 static bool lastButtonState = false;
+static bool cameraReady = false;
 
 static void drawTestPattern() {
   tft.fillScreen(ILI9341_BLACK);
@@ -44,6 +50,61 @@ static void drawTestPattern() {
   tft.printf("%dx%d\n", tft.width(), tft.height());
 }
 
+static bool initCamera() {
+  camera_config_t config = {};
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = CAM_Y2_PIN;
+  config.pin_d1 = CAM_Y3_PIN;
+  config.pin_d2 = CAM_Y4_PIN;
+  config.pin_d3 = CAM_Y5_PIN;
+  config.pin_d4 = CAM_Y6_PIN;
+  config.pin_d5 = CAM_Y7_PIN;
+  config.pin_d6 = CAM_Y8_PIN;
+  config.pin_d7 = CAM_Y9_PIN;
+  config.pin_xclk = CAM_XCLK_PIN;
+  config.pin_pclk = CAM_PCLK_PIN;
+  config.pin_vsync = CAM_VSYNC_PIN;
+  config.pin_href = CAM_HREF_PIN;
+  config.pin_sccb_sda = CAM_SIOD_PIN;
+  config.pin_sccb_scl = CAM_SIOC_PIN;
+  config.pin_pwdn = CAM_PWDN_PIN;
+  config.pin_reset = CAM_RESET_PIN;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = FRAMESIZE_QVGA; // 320x240 — small/fast for bring-up
+  config.jpeg_quality = 12;
+  config.fb_count = psramFound() ? 2 : 1;
+  config.fb_location = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
+  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("CAM: init failed, err=0x%x\n", err);
+    return false;
+  }
+  return true;
+}
+
+static void captureAndDump() {
+  if (!cameraReady) {
+    Serial.println("CAM: not initialized, skipping capture");
+    return;
+  }
+
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("CAM: capture failed");
+    return;
+  }
+
+  Serial.printf("CAM:BEGIN len=%u\n", fb->len);
+  Serial.println(base64::encode(fb->buf, fb->len));
+  Serial.println("CAM:END");
+
+  esp_camera_fb_return(fb);
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300); // let the CH343 USB-UART bridge settle
@@ -58,6 +119,9 @@ void setup() {
   tft.setRotation(1); // landscape
   drawTestPattern();
   Serial.println("TFT init + test pattern drawn");
+
+  cameraReady = initCamera();
+  Serial.printf("CAM: init %s\n", cameraReady ? "OK" : "FAILED");
 }
 
 void loop() {
@@ -73,5 +137,8 @@ void loop() {
   if (buttonState != lastButtonState) {
     lastButtonState = buttonState;
     Serial.printf("button1 %s\n", buttonState ? "PRESSED" : "released");
+    if (buttonState) {
+      captureAndDump();
+    }
   }
 }

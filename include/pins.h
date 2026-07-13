@@ -9,6 +9,24 @@
 #define STATUS_LED_PIN 2   // "IO2" onboard LED; also planned as TFT DC (shared, cosmetic flicker only)
 #define WS2812_PIN     48  // onboard addressable status LED
 
+// --- Camera (OV2640, soldered on-board — Freenove FNK0085) ---
+#define CAM_SIOD_PIN  4
+#define CAM_SIOC_PIN  5
+#define CAM_VSYNC_PIN 6
+#define CAM_HREF_PIN  7
+#define CAM_Y4_PIN    8  // D2
+#define CAM_Y3_PIN    9  // D1
+#define CAM_Y5_PIN    10 // D3
+#define CAM_Y2_PIN    11 // D0
+#define CAM_Y6_PIN    12 // D4
+#define CAM_PCLK_PIN  13
+#define CAM_XCLK_PIN  15
+#define CAM_Y9_PIN    16 // D7
+#define CAM_Y8_PIN    17 // D6
+#define CAM_Y7_PIN    18 // D5
+#define CAM_PWDN_PIN  -1 // not broken out on this board
+#define CAM_RESET_PIN -1 // not broken out on this board
+
 // --- Button 1 (shutter) — wired ---
 #define BUTTON1_PIN 38     // active-high: idle LOW, pressed HIGH. Plain INPUT, no INPUT_PULLUP (onboard resistor on the module).
 

@@ -48,11 +48,11 @@ Confirmed against the official Freenove ESP32-S3 WROOM pinout diagram.
 | Button 1 | VCC | 3.3V (never 5V) | wired |
 | Button 1 | GND | GND | wired |
 | TFT | MOSI | GPIO41 | wired |
-| TFT | SCK | GPIO14 | wired |
-| TFT | CS | GPIO1 | wired |
-| TFT | DC/RS | GPIO2 — note: shares the pin with the onboard "IO2" LED, which will flicker with SPI traffic (cosmetic only) | wired |
-| TFT | RST | GPIO42 | wired |
-| TFT | LED (backlight) | 3.3V direct (GPIO41 now taken by MOSI, so no PWM dimming option unless moved to another free pin) | wired |
+| TFT | SCK | GPIO14 | not yet wired |
+| TFT | CS | GPIO1 | not yet wired |1
+| TFT | DC/RS | GPIO2 — note: shares the pin with the onboard "IO2" LED, which will flicker with SPI traffic (cosmetic only) | not yet wired |
+| TFT | RST | GPIO42 | not yet wired |
+| TFT | LED (backlight) | 3.3V direct (GPIO41 now taken by MOSI, so no PWM dimming option unless moved to another free pin) | not yet wired |
 
 Free pins remaining for more buttons or backlight PWM later: GPIO39,
 40, 47.
