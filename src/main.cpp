@@ -95,11 +95,15 @@ static void renderCameraFrame() {
   if (!fb) {
     return;
   }
-  // OV2640 RGB565 output is big-endian; ESP32 is little-endian, so a
-  // straight cast to uint16_t* scrambles colors — swap in place first.
-  uint16_t *pixels = (uint16_t *)fb->buf;
-  tft.swapBytes(pixels, fb->len / 2);
-  tft.drawRGBBitmap(0, 0, pixels, fb->width, fb->height);
+  // drawRGBBitmap() resets the address window on every pixel, which is
+  // far too slow for a live feed (visible as flicker/tearing). Set the
+  // window once and burst the whole frame instead. Camera RGB565 bytes
+  // are already in the big-endian order the SPI panel wants, so pass
+  // bigEndian=true and skip a manual byte-swap pass.
+  tft.startWrite();
+  tft.setAddrWindow(0, 0, fb->width, fb->height);
+  tft.writePixels((uint16_t *)fb->buf, fb->width * fb->height, true, true);
+  tft.endWrite();
   esp_camera_fb_return(fb);
 }
 
