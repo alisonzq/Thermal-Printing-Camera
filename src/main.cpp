@@ -3,16 +3,16 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <esp_camera.h>
-#include <base64.h>
 
 #include "pins.h"
 
 // Step 1: blink/serial-print bring-up (heartbeat + shutter button) — done.
 // Step 2: TFT alone, SPI init + test pattern — done.
-// Step 3 of the build order in CLAUDE.md: bring up the camera alone.
-// Shutter button press triggers a JPEG capture, dumped as base64 over
-// serial (marked with CAM:BEGIN/CAM:END) so it can be decoded and viewed
-// on a PC without SD or the TFT-render step (step 4).
+// Step 3: camera alone, JPEG capture dumped over serial — done.
+// Step 4 of the build order in CLAUDE.md: get camera frames rendering to
+// the TFT. Camera runs continuous RGB565 QVGA (320x240) capture, which
+// matches the TFT's landscape resolution 1:1, so each frame blits
+// straight to the display with no scaling or rotation.
 //
 // TFT_DC_PIN == STATUS_LED_PIN (GPIO2): the ILI9341 library now owns that
 // pin and toggles it on every SPI transfer, so there's no manual heartbeat
@@ -71,14 +71,11 @@ static bool initCamera() {
   config.pin_pwdn = CAM_PWDN_PIN;
   config.pin_reset = CAM_RESET_PIN;
   config.xclk_freq_hz = 20000000;
-  config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_QVGA; // 320x240 — small/fast for bring-up
-  config.jpeg_quality = 12;
+  config.pixel_format = PIXFORMAT_RGB565;
+  config.frame_size = FRAMESIZE_QVGA; // 320x240 — matches TFT landscape exactly
   config.fb_count = psramFound() ? 2 : 1;
   config.fb_location = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
-  // Drop stale queued frames and grab the most recent one instead of the
-  // oldest — pairs with the discard-then-grab in captureAndDump().
-  config.grab_mode = CAMERA_GRAB_LATEST;
+  config.grab_mode = CAMERA_GRAB_LATEST; // drop stale queued frames, always render the newest
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
@@ -93,30 +90,16 @@ static bool initCamera() {
   return true;
 }
 
-static void captureAndDump() {
-  if (!cameraReady) {
-    Serial.println("CAM: not initialized, skipping capture");
-    return;
-  }
-
-  // The sensor free-runs into its DMA buffer even when idle, so the first
-  // fb_get() after a period of no captures returns a stale frame from
-  // before the button press. Throw one away, then grab a fresh one.
-  camera_fb_t *stale = esp_camera_fb_get();
-  if (stale) {
-    esp_camera_fb_return(stale);
-  }
-
+static void renderCameraFrame() {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
-    Serial.println("CAM: capture failed");
     return;
   }
-
-  Serial.printf("CAM:BEGIN len=%u\n", fb->len);
-  Serial.println(base64::encode(fb->buf, fb->len));
-  Serial.println("CAM:END");
-
+  // OV2640 RGB565 output is big-endian; ESP32 is little-endian, so a
+  // straight cast to uint16_t* scrambles colors — swap in place first.
+  uint16_t *pixels = (uint16_t *)fb->buf;
+  tft.swapBytes(pixels, fb->len / 2);
+  tft.drawRGBBitmap(0, 0, pixels, fb->width, fb->height);
   esp_camera_fb_return(fb);
 }
 
@@ -142,6 +125,10 @@ void setup() {
 void loop() {
   static uint32_t lastBeat = 0;
 
+  if (cameraReady) {
+    renderCameraFrame();
+  }
+
   uint32_t now = millis();
   if (now - lastBeat >= 1000) {
     lastBeat = now;
@@ -152,8 +139,5 @@ void loop() {
   if (buttonState != lastButtonState) {
     lastButtonState = buttonState;
     Serial.printf("button1 %s\n", buttonState ? "PRESSED" : "released");
-    if (buttonState) {
-      captureAndDump();
-    }
   }
 }
