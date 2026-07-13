@@ -3,6 +3,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <esp_camera.h>
+#include <esp_heap_caps.h>
 
 #include "pins.h"
 
@@ -10,15 +11,18 @@
 // Step 2: TFT alone, SPI init + test pattern — done.
 // Step 3: camera alone, JPEG capture dumped over serial — done.
 // Step 4: camera frames rendering live to the TFT — done.
-// Step 5 of the build order in CLAUDE.md: bring up the printer UART
-// independently — send a raw ESC/POS test line, before wiring it into the
-// capture/print flow (step 6). Shutter button press triggers a test print,
-// decoupled from the camera for now.
+// Step 5: printer UART independently, raw ESC/POS test line — done.
+// Step 6 of the build order in CLAUDE.md: wire the button into a full
+// capture -> preview -> print state machine. Button press freezes the
+// live frame on the TFT, dithers it to 1-bit and prints it as an ESC/POS
+// raster image (GS v 0), then resumes the live feed.
 //
-// DP-628 baud rate is NOT confirmed from an official datasheet (see
-// CLAUDE.md known gotchas) — 9600 8N1 is the common default for these TTL
-// thermal printer modules; if the test line prints garbage or nothing,
-// try 19200 or 115200 next.
+// DP-628 baud rate and print width are NOT confirmed from an official
+// datasheet (see CLAUDE.md known gotchas): 9600 8N1 is the common default
+// for these TTL thermal printer modules, and 384 dots (58mm @ 8 dots/mm,
+// 203dpi) is the common print width for this printer size. At 9600 baud
+// a full 384x288 image is ~14s of transfer — try 19200/115200 if that's
+// too slow and the printer accepts it.
 //
 // TFT_DC_PIN == STATUS_LED_PIN (GPIO2): the ILI9341 library now owns that
 // pin and toggles it on every SPI transfer, so there's no manual heartbeat
@@ -26,14 +30,21 @@
 // (cosmetic only, per CLAUDE.md).
 
 static const uint32_t PRINTER_BAUD = 9600;
+static const int PRINTER_WIDTH_DOTS = 384; // unconfirmed — adjust if prints come out wrong width
+static const int PRINTER_WIDTH_BYTES = PRINTER_WIDTH_DOTS / 8;
+static const uint32_t PREVIEW_HOLD_MS = 1500; // how long to show the frozen capture before printing
 
 static SPIClass tftSPI(FSPI);
 static Adafruit_ILI9341 tft(&tftSPI, TFT_DC_PIN, TFT_CS_PIN, TFT_RST_PIN);
 static HardwareSerial printerSerial(1);
 
+enum AppState { STATE_LIVE, STATE_CAPTURED, STATE_PRINTING };
+static AppState appState = STATE_LIVE;
+static camera_fb_t *capturedFrame = nullptr;
+static uint32_t capturedAtMs = 0;
+
 static bool lastButtonState = false;
 static bool cameraReady = false;
-static uint32_t testPrintCount = 0;
 
 static void drawTestPattern() {
   tft.fillScreen(ILI9341_BLACK);
@@ -100,11 +111,7 @@ static bool initCamera() {
   return true;
 }
 
-static void renderCameraFrame() {
-  camera_fb_t *fb = esp_camera_fb_get();
-  if (!fb) {
-    return;
-  }
+static void blitFrameToTFT(camera_fb_t *fb) {
   // drawRGBBitmap() resets the address window on every pixel, which is
   // far too slow for a live feed (visible as flicker/tearing). Set the
   // window once and burst the whole frame instead. Camera RGB565 bytes
@@ -114,7 +121,35 @@ static void renderCameraFrame() {
   tft.setAddrWindow(0, 0, fb->width, fb->height);
   tft.writePixels((uint16_t *)fb->buf, fb->width * fb->height, true, true);
   tft.endWrite();
+}
+
+static void renderCameraFrame() {
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) {
+    return;
+  }
+  blitFrameToTFT(fb);
   esp_camera_fb_return(fb);
+}
+
+// The sensor free-runs into its DMA buffer even when idle, so the first
+// fb_get() after a period of no captures returns a stale frame from
+// before the button press. Throw one away, then grab a fresh one.
+static camera_fb_t *captureFreshFrame() {
+  camera_fb_t *stale = esp_camera_fb_get();
+  if (stale) {
+    esp_camera_fb_return(stale);
+  }
+  return esp_camera_fb_get();
+}
+
+static void drawStatusBanner(const char *text) {
+  int16_t barHeight = 24;
+  tft.fillRect(0, tft.height() - barHeight, tft.width(), barHeight, ILI9341_BLACK);
+  tft.setCursor(4, tft.height() - barHeight + 4);
+  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextSize(2);
+  tft.print(text);
 }
 
 static void initPrinter() {
@@ -124,18 +159,92 @@ static void initPrinter() {
   printerSerial.write('@');  // @ — initialize printer
 }
 
-static void sendTestPrint() {
-  testPrintCount++;
+static inline uint8_t clampByte(int v) {
+  if (v < 0) return 0;
+  if (v > 255) return 255;
+  return (uint8_t)v;
+}
+
+// Camera RGB565 bytes are big-endian in memory (see blitFrameToTFT).
+static inline uint16_t readFramePixel(camera_fb_t *fb, int x, int y) {
+  int idx = (y * fb->width + x) * 2;
+  return (fb->buf[idx] << 8) | fb->buf[idx + 1];
+}
+
+static void printPhoto(camera_fb_t *fb) {
+  int printHeight = PRINTER_WIDTH_DOTS * fb->height / fb->width;
+
+  uint8_t *gray = (uint8_t *)heap_caps_malloc(PRINTER_WIDTH_DOTS * printHeight, MALLOC_CAP_SPIRAM);
+  if (!gray) {
+    Serial.println("PRINTER: out of memory building print buffer, skipping print");
+    return;
+  }
+
+  // Nearest-neighbor scale + grayscale (standard luma weights).
+  for (int y = 0; y < printHeight; y++) {
+    int srcY = y * fb->height / printHeight;
+    for (int x = 0; x < PRINTER_WIDTH_DOTS; x++) {
+      int srcX = x * fb->width / PRINTER_WIDTH_DOTS;
+      uint16_t px = readFramePixel(fb, srcX, srcY);
+      uint8_t r = ((px >> 11) & 0x1F) * 255 / 31;
+      uint8_t g = ((px >> 5) & 0x3F) * 255 / 63;
+      uint8_t b = (px & 0x1F) * 255 / 31;
+      gray[y * PRINTER_WIDTH_DOTS + x] = (r * 299 + g * 587 + b * 114) / 1000;
+    }
+  }
+
+  // Floyd-Steinberg dithering to 1-bit black/white — thermal printers have
+  // no grayscale, so dithering keeps detail that a hard threshold would lose.
+  for (int y = 0; y < printHeight; y++) {
+    for (int x = 0; x < PRINTER_WIDTH_DOTS; x++) {
+      int i = y * PRINTER_WIDTH_DOTS + x;
+      uint8_t oldPixel = gray[i];
+      uint8_t newPixel = oldPixel < 128 ? 0 : 255;
+      int16_t error = (int16_t)oldPixel - newPixel;
+      gray[i] = newPixel;
+      if (x + 1 < PRINTER_WIDTH_DOTS)
+        gray[i + 1] = clampByte(gray[i + 1] + error * 7 / 16);
+      if (y + 1 < printHeight) {
+        if (x > 0)
+          gray[i + PRINTER_WIDTH_DOTS - 1] = clampByte(gray[i + PRINTER_WIDTH_DOTS - 1] + error * 3 / 16);
+        gray[i + PRINTER_WIDTH_DOTS] = clampByte(gray[i + PRINTER_WIDTH_DOTS] + error * 5 / 16);
+        if (x + 1 < PRINTER_WIDTH_DOTS)
+          gray[i + PRINTER_WIDTH_DOTS + 1] = clampByte(gray[i + PRINTER_WIDTH_DOTS + 1] + error * 1 / 16);
+      }
+    }
+  }
+
   Serial.printf("PRINTER: DTR pin reads %d before send\n", digitalRead(PRINTER_DTR_PIN));
 
-  printerSerial.printf("Thermal Printer Camera - UART test #%lu\n", testPrintCount);
-  printerSerial.print("ESC/POS link OK\n");
+  // ESC/POS raster bit image: GS v 0 m xL xH yL yH [data]
+  printerSerial.write(0x1D);
+  printerSerial.write('v');
+  printerSerial.write('0');
+  printerSerial.write((uint8_t)0); // m = normal
+  printerSerial.write((uint8_t)(PRINTER_WIDTH_BYTES & 0xFF));
+  printerSerial.write((uint8_t)((PRINTER_WIDTH_BYTES >> 8) & 0xFF));
+  printerSerial.write((uint8_t)(printHeight & 0xFF));
+  printerSerial.write((uint8_t)((printHeight >> 8) & 0xFF));
+
+  uint8_t rowBuf[PRINTER_WIDTH_BYTES];
+  for (int y = 0; y < printHeight; y++) {
+    memset(rowBuf, 0, sizeof(rowBuf));
+    for (int x = 0; x < PRINTER_WIDTH_DOTS; x++) {
+      if (gray[y * PRINTER_WIDTH_DOTS + x] == 0) { // black dot
+        rowBuf[x / 8] |= 0x80 >> (x % 8);
+      }
+    }
+    printerSerial.write(rowBuf, PRINTER_WIDTH_BYTES);
+  }
+
   printerSerial.write('\n');
   printerSerial.write('\n');
-  printerSerial.write('\n'); // feed a few lines so the line is clear of the tear bar
+  printerSerial.write('\n'); // feed clear of the tear bar
 
   Serial.printf("PRINTER: DTR pin reads %d after send\n", digitalRead(PRINTER_DTR_PIN));
-  Serial.println("PRINTER: test line sent");
+  Serial.printf("PRINTER: photo printed (%dx%d dots)\n", PRINTER_WIDTH_DOTS, printHeight);
+
+  heap_caps_free(gray);
 }
 
 void setup() {
@@ -163,22 +272,47 @@ void setup() {
 void loop() {
   static uint32_t lastBeat = 0;
 
-  if (cameraReady) {
-    renderCameraFrame();
+  bool buttonState = digitalRead(BUTTON1_PIN) == HIGH;
+  bool buttonPressedEdge = buttonState && !lastButtonState;
+  lastButtonState = buttonState;
+
+  switch (appState) {
+  case STATE_LIVE:
+    if (cameraReady) {
+      renderCameraFrame();
+    }
+    if (buttonPressedEdge && cameraReady) {
+      capturedFrame = captureFreshFrame();
+      if (capturedFrame) {
+        blitFrameToTFT(capturedFrame);
+        capturedAtMs = millis();
+        appState = STATE_CAPTURED;
+        Serial.println("STATE: captured, showing preview");
+      } else {
+        Serial.println("STATE: capture failed, staying live");
+      }
+    }
+    break;
+
+  case STATE_CAPTURED:
+    if (millis() - capturedAtMs >= PREVIEW_HOLD_MS) {
+      drawStatusBanner("PRINTING...");
+      appState = STATE_PRINTING;
+    }
+    break;
+
+  case STATE_PRINTING:
+    printPhoto(capturedFrame);
+    esp_camera_fb_return(capturedFrame);
+    capturedFrame = nullptr;
+    Serial.println("STATE: print done, back to live preview");
+    appState = STATE_LIVE;
+    break;
   }
 
   uint32_t now = millis();
   if (now - lastBeat >= 1000) {
     lastBeat = now;
     Serial.printf("heartbeat t=%lu ms\n", now);
-  }
-
-  bool buttonState = digitalRead(BUTTON1_PIN) == HIGH;
-  if (buttonState != lastButtonState) {
-    lastButtonState = buttonState;
-    Serial.printf("button1 %s\n", buttonState ? "PRESSED" : "released");
-    if (buttonState) {
-      sendTestPrint();
-    }
   }
 }
