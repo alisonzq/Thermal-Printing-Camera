@@ -9,21 +9,31 @@
 // Step 1: blink/serial-print bring-up (heartbeat + shutter button) — done.
 // Step 2: TFT alone, SPI init + test pattern — done.
 // Step 3: camera alone, JPEG capture dumped over serial — done.
-// Step 4 of the build order in CLAUDE.md: get camera frames rendering to
-// the TFT. Camera runs continuous RGB565 QVGA (320x240) capture, which
-// matches the TFT's landscape resolution 1:1, so each frame blits
-// straight to the display with no scaling or rotation.
+// Step 4: camera frames rendering live to the TFT — done.
+// Step 5 of the build order in CLAUDE.md: bring up the printer UART
+// independently — send a raw ESC/POS test line, before wiring it into the
+// capture/print flow (step 6). Shutter button press triggers a test print,
+// decoupled from the camera for now.
+//
+// DP-628 baud rate is NOT confirmed from an official datasheet (see
+// CLAUDE.md known gotchas) — 9600 8N1 is the common default for these TTL
+// thermal printer modules; if the test line prints garbage or nothing,
+// try 19200 or 115200 next.
 //
 // TFT_DC_PIN == STATUS_LED_PIN (GPIO2): the ILI9341 library now owns that
 // pin and toggles it on every SPI transfer, so there's no manual heartbeat
 // LED blink — the onboard IO2 LED just flickers along with display traffic
 // (cosmetic only, per CLAUDE.md).
 
+static const uint32_t PRINTER_BAUD = 9600;
+
 static SPIClass tftSPI(FSPI);
 static Adafruit_ILI9341 tft(&tftSPI, TFT_DC_PIN, TFT_CS_PIN, TFT_RST_PIN);
+static HardwareSerial printerSerial(1);
 
 static bool lastButtonState = false;
 static bool cameraReady = false;
+static uint32_t testPrintCount = 0;
 
 static void drawTestPattern() {
   tft.fillScreen(ILI9341_BLACK);
@@ -107,6 +117,27 @@ static void renderCameraFrame() {
   esp_camera_fb_return(fb);
 }
 
+static void initPrinter() {
+  printerSerial.begin(PRINTER_BAUD, SERIAL_8N1, PRINTER_RX_PIN, PRINTER_TX_PIN);
+  pinMode(PRINTER_DTR_PIN, INPUT); // busy/flow-control line, active meaning TBD — just observing for now
+  printerSerial.write(0x1B); // ESC
+  printerSerial.write('@');  // @ — initialize printer
+}
+
+static void sendTestPrint() {
+  testPrintCount++;
+  Serial.printf("PRINTER: DTR pin reads %d before send\n", digitalRead(PRINTER_DTR_PIN));
+
+  printerSerial.printf("Thermal Printer Camera - UART test #%lu\n", testPrintCount);
+  printerSerial.print("ESC/POS link OK\n");
+  printerSerial.write('\n');
+  printerSerial.write('\n');
+  printerSerial.write('\n'); // feed a few lines so the line is clear of the tear bar
+
+  Serial.printf("PRINTER: DTR pin reads %d after send\n", digitalRead(PRINTER_DTR_PIN));
+  Serial.println("PRINTER: test line sent");
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300); // let the CH343 USB-UART bridge settle
@@ -124,6 +155,9 @@ void setup() {
 
   cameraReady = initCamera();
   Serial.printf("CAM: init %s\n", cameraReady ? "OK" : "FAILED");
+
+  initPrinter();
+  Serial.println("PRINTER: UART init done");
 }
 
 void loop() {
@@ -143,5 +177,8 @@ void loop() {
   if (buttonState != lastButtonState) {
     lastButtonState = buttonState;
     Serial.printf("button1 %s\n", buttonState ? "PRESSED" : "released");
+    if (buttonState) {
+      sendTestPrint();
+    }
   }
 }
