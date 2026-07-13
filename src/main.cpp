@@ -40,7 +40,12 @@
 // per-pixel (flickery but working) until that's revisited and verified
 // properly on real hardware before moving on.
 
-static const uint32_t PRINTER_BAUD = 9600;
+// 9600 produced garbled/near-blank output on both GS v 0 and ESC * bit
+// image commands, despite plain text and the short ESC @ init working
+// fine — trying 19200 next in case long binary payloads are hitting UART
+// framing errors that short commands tolerate. Other candidates if this
+// doesn't help: 38400, 115200.
+static const uint32_t PRINTER_BAUD = 19200;
 static const int PRINTER_WIDTH_DOTS = 384; // unconfirmed — adjust if prints come out wrong width
 static const uint32_t PREVIEW_HOLD_MS = 1500; // how long to show the frozen capture before printing
 
