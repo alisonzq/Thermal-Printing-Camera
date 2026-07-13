@@ -1,0 +1,5 @@
+"STARTUP.obj",
+"main.obj",
+".\source\DP_Print_lib.LIB" 
+TO "ExmapleSTC" 
+RAMSIZE(256) 

@@ -270,40 +270,40 @@ static void printSmileyTest() {
 }
 
 // GS v 0 printed garbled ASCII instead of an image, suggesting the DP-628
-// doesn't recognize that raster command at all. This probes the older,
-// more universally-supported ESC * bit image command instead, printing
-// two labeled solid-black test bars (8-dot and 24-dot density) so it's
-// obvious from the paper which command (if either) the printer actually
-// understands.
+// doesn't recognize that raster command at all. Reverse-engineering the
+// manufacturer's compiled 51 MCU demo (see 51 MCU Demo code/) confirmed
+// ESC @ (init) and a plain LF (print+feed) match what we already send,
+// and that the library's Sel_Bitmap_Mode() modes (0/1/32/33) line up
+// exactly with ESC *'s density modes — so ESC * is very likely the right
+// command. The previous test came out as a very faint mark instead of a
+// solid bar, which smells like inverted bit polarity (0=print/1=blank
+// instead of the 1=print/0=blank we assumed) rather than an unsupported
+// command. This probes both polarities at both densities so it's
+// unambiguous from the paper which (if any) combination is correct.
+static void sendEscStarBar(const char *label, uint8_t mode, int columns, uint8_t fillByte) {
+  int bytesPerColumn = (mode == 32 || mode == 33) ? 3 : 1;
+  printerSerial.print(label);
+  printerSerial.write(0x1B); // ESC
+  printerSerial.write('*');
+  printerSerial.write(mode);
+  printerSerial.write((uint8_t)(columns & 0xFF));
+  printerSerial.write((uint8_t)((columns >> 8) & 0xFF));
+  for (int i = 0; i < columns * bytesPerColumn; i++) {
+    printerSerial.write(fillByte);
+  }
+  printerSerial.write('\n');
+  printerSerial.write('\n');
+}
+
 static void printEscStarProbe() {
   const int columns = 64;
-
-  printerSerial.print("ESC*8dot below:\n");
-  printerSerial.write(0x1B); // ESC
-  printerSerial.write('*');
-  printerSerial.write((uint8_t)0); // m=0, 8-dot single density
-  printerSerial.write((uint8_t)(columns & 0xFF));
-  printerSerial.write((uint8_t)((columns >> 8) & 0xFF));
-  for (int i = 0; i < columns; i++) {
-    printerSerial.write((uint8_t)0xFF); // solid black column, 8 dots tall
-  }
-  printerSerial.write('\n');
+  sendEscStarBar("8dot 0xFF:\n", 0, columns, 0xFF);
+  sendEscStarBar("8dot 0x00:\n", 0, columns, 0x00);
+  sendEscStarBar("24dot 0xFF:\n", 33, columns, 0xFF);
+  sendEscStarBar("24dot 0x00:\n", 33, columns, 0x00);
   printerSerial.write('\n');
 
-  printerSerial.print("ESC*24dot below:\n");
-  printerSerial.write(0x1B); // ESC
-  printerSerial.write('*');
-  printerSerial.write((uint8_t)33); // m=33, 24-dot double density
-  printerSerial.write((uint8_t)(columns & 0xFF));
-  printerSerial.write((uint8_t)((columns >> 8) & 0xFF));
-  for (int i = 0; i < columns * 3; i++) {
-    printerSerial.write((uint8_t)0xFF); // solid black column, 24 dots tall (3 bytes/column)
-  }
-  printerSerial.write('\n');
-  printerSerial.write('\n');
-  printerSerial.write('\n');
-
-  Serial.println("PRINTER: ESC* probe sent");
+  Serial.println("PRINTER: ESC* probe sent (4 bars: 8dot/24dot x 0xFF/0x00)");
 }
 
 static void printPhoto(camera_fb_t *fb) {

@@ -1,0 +1,330 @@
+BL51 BANKED LINKER/LOCATER V6.22                                                        06/18/2015  22:07:11  PAGE 1
+
+
+BL51 BANKED LINKER/LOCATER V6.22, INVOKED BY:
+C:\KEIL\C51\BIN\BL51.EXE STARTUP.obj, main.obj, .\source\DP_Print_lib.LIB TO ExmapleSTC RAMSIZE (256)
+
+
+MEMORY MODEL: SMALL
+
+
+INPUT MODULES INCLUDED:
+  STARTUP.obj (?C_STARTUP)
+  main.obj (MAIN)
+  .\source\DP_Print_lib.LIB (DP_PRINT_LIB)
+  C:\KEIL\C51\LIB\C51S.LIB (?C_INIT)
+  C:\KEIL\C51\LIB\C51S.LIB (?C?CLDPTR)
+  C:\KEIL\C51\LIB\C51S.LIB (?C?CLDOPTR)
+
+
+LINK MAP OF MODULE:  ExmapleSTC (?C_STARTUP)
+
+
+            TYPE    BASE      LENGTH    RELOCATION   SEGMENT NAME
+            -----------------------------------------------------
+
+            * * * * * * *   D A T A   M E M O R Y   * * * * * * *
+            REG     0000H     0008H     ABSOLUTE     "REG BANK 0"
+            DATA    0008H     0004H     UNIT         _DATA_GROUP_
+            DATA    000CH     0001H     UNIT         ?DT?MAIN
+            DATA    000DH     0001H     UNIT         ?DT?_PRINTGOPAGE?DP_PRINT_LIB
+            DATA    000EH     0001H     UNIT         ?DT?_SETCHINESEMODE?DP_PRINT_LIB
+            DATA    000FH     0001H     UNIT         ?DT?DP_PRINT_LIB
+            IDATA   0010H     0001H     UNIT         ?STACK
+
+            * * * * * * *   C O D E   M E M O R Y   * * * * * * *
+            CODE    0000H     0003H     ABSOLUTE     
+            CODE    0003H     0016H     UNIT         ?PR?_PRINTGOPAGE?DP_PRINT_LIB
+            CODE    0019H     000AH     UNIT         ?PR?PRINT_AND_LINE?DP_PRINT_LIB
+            CODE    0023H     0003H     ABSOLUTE     
+            CODE    0026H     008CH     UNIT         ?C_C51STARTUP
+            CODE    00B2H     004EH     UNIT         ?PR?_CHECKPASSWORD?DP_PRINT_LIB
+            CODE    0100H     0046H     UNIT         ?C?LIB_CODE
+            CODE    0146H     002AH     UNIT         ?PR?_PRINT_ASCII?DP_PRINT_LIB
+            CODE    0170H     0022H     UNIT         ?PR?MAIN?MAIN
+            CODE    0192H     0016H     UNIT         ?PR?_SETCHINESEMODE?DP_PRINT_LIB
+            CODE    01A8H     0014H     UNIT         ?PR?INITIALIZEPRINT?DP_PRINT_LIB
+            CODE    01BCH     0013H     UNIT         ?PR?UARTINIT?MAIN
+            CODE    01CFH     0013H     UNIT         ?CO?MAIN
+            CODE    01E2H     000FH     UNIT         ?PR?SELCHINESECHAR?DP_PRINT_LIB
+            CODE    01F1H     000FH     UNIT         ?PR?DISCHINESECHAR?DP_PRINT_LIB
+            CODE    0200H     000EH     UNIT         ?PR?UART_ISR?MAIN
+            CODE    020EH     000BH     UNIT         ?PR?_UART_SENDBYTE?MAIN
+            CODE    0219H     0004H     UNIT         ?C_INITSEG
+
+
+
+OVERLAY MAP OF MODULE:   ExmapleSTC (?C_STARTUP)
+
+
+SEGMENT                                    DATA_GROUP 
+  +--> CALLED SEGMENT                    START    LENGTH
+BL51 BANKED LINKER/LOCATER V6.22                                                      06/18/2015  22:07:11  PAGE 2
+
+
+--------------------------------------------------------
+?C_C51STARTUP                            -----    -----
+  +--> ?PR?MAIN?MAIN
+  +--> ?C_INITSEG
+
+?PR?MAIN?MAIN                            -----    -----
+  +--> ?PR?UARTINIT?MAIN
+  +--> ?CO?MAIN
+  +--> ?PR?_CHECKPASSWORD?DP_PRINT_LIB
+  +--> ?PR?INITIALIZEPRINT?DP_PRINT_LIB
+  +--> ?PR?SELCHINESECHAR?DP_PRINT_LIB
+  +--> ?PR?_PRINT_ASCII?DP_PRINT_LIB
+  +--> ?PR?PRINT_AND_LINE?DP_PRINT_LIB
+
+?PR?INITIALIZEPRINT?DP_PRINT_LIB         -----    -----
+  +--> ?PR?_UART_SENDBYTE?MAIN
+
+?PR?SELCHINESECHAR?DP_PRINT_LIB          -----    -----
+  +--> ?PR?_UART_SENDBYTE?MAIN
+
+?PR?_PRINT_ASCII?DP_PRINT_LIB            0008H    0004H
+  +--> ?PR?_UART_SENDBYTE?MAIN
+
+?PR?PRINT_AND_LINE?DP_PRINT_LIB          -----    -----
+  +--> ?PR?_UART_SENDBYTE?MAIN
+
+
+
+SYMBOL TABLE OF MODULE:  ExmapleSTC (?C_STARTUP)
+
+  VALUE           TYPE          NAME
+  ----------------------------------
+
+  -------         MODULE        ?C_STARTUP
+  C:0026H         SEGMENT       ?C_C51STARTUP
+  I:0010H         SEGMENT       ?STACK
+  C:0000H         PUBLIC        ?C_STARTUP
+  D:00E0H         SYMBOL        ACC
+  D:00F0H         SYMBOL        B
+  D:0083H         SYMBOL        DPH
+  D:0082H         SYMBOL        DPL
+  N:0000H         SYMBOL        IBPSTACK
+  N:0100H         SYMBOL        IBPSTACKTOP
+  N:0080H         SYMBOL        IDATALEN
+  C:0029H         SYMBOL        IDATALOOP
+  N:0000H         SYMBOL        PBPSTACK
+  N:0100H         SYMBOL        PBPSTACKTOP
+  N:0000H         SYMBOL        PDATALEN
+  N:0000H         SYMBOL        PDATASTART
+  N:0000H         SYMBOL        PPAGE
+  N:0000H         SYMBOL        PPAGEENABLE
+  D:00A0H         SYMBOL        PPAGE_SFR
+  D:0081H         SYMBOL        SP
+  C:0026H         SYMBOL        STARTUP1
+  N:0000H         SYMBOL        XBPSTACK
+  N:0000H         SYMBOL        XBPSTACKTOP
+  N:0000H         SYMBOL        XDATALEN
+BL51 BANKED LINKER/LOCATER V6.22                                                      06/18/2015  22:07:11  PAGE 3
+
+
+  N:0000H         SYMBOL        XDATASTART
+  C:0000H         LINE#         126
+  C:0026H         LINE#         133
+  C:0028H         LINE#         134
+  C:0029H         LINE#         135
+  C:002AH         LINE#         136
+  C:002CH         LINE#         185
+  C:002FH         LINE#         196
+  -------         ENDMOD        ?C_STARTUP
+
+  -------         MODULE        MAIN
+  C:0000H         SYMBOL        _ICE_DUMMY_
+  D:0080H         PUBLIC        P0
+  D:0090H         PUBLIC        P1
+  D:00A0H         PUBLIC        P2
+  D:00B0H         PUBLIC        P3
+  D:00C0H         PUBLIC        P4
+  D:00C8H         PUBLIC        P5
+  B:00A8H.7       PUBLIC        EA
+  D:00A8H         PUBLIC        IE
+  B:00A8H.4       PUBLIC        ES
+  D:00B8H         PUBLIC        IP
+  B:0098H.0       PUBLIC        RI
+  B:0098H.1       PUBLIC        TI
+  D:00D8H         PUBLIC        CCON
+  C:0170H         PUBLIC        main
+  D:0099H         PUBLIC        SBUF
+  D:0098H         PUBLIC        SCON
+  D:0089H         PUBLIC        TMOD
+  D:0088H         PUBLIC        TCON
+  C:020EH         PUBLIC        _UART_SendByte
+  D:000CH         PUBLIC        busy
+  D:00E0H         PUBLIC        ACC
+  D:008DH         PUBLIC        TH1
+  C:0200H         PUBLIC        Uart_isr
+  D:008BH         PUBLIC        TL1
+  C:01D8H         PUBLIC        printTest
+  C:01BCH         PUBLIC        UARTInit
+  B:0088H.6       PUBLIC        TR1
+  C:01CFH         PUBLIC        password
+  D:00D0H         PUBLIC        PSW
+  -------         PROC          UARTINIT
+  C:01BCH         LINE#         14
+  C:01BCH         LINE#         15
+  C:01BCH         LINE#         16
+  C:01BFH         LINE#         17
+  C:01C2H         LINE#         18
+  C:01C8H         LINE#         19
+  C:01CAH         LINE#         20
+  C:01CCH         LINE#         21
+  C:01CEH         LINE#         22
+  -------         ENDPROC       UARTINIT
+  -------         PROC          _UART_SENDBYTE
+  D:0007H         SYMBOL        Send_Dat
+  C:020EH         LINE#         24
+  C:020EH         LINE#         25
+  C:020EH         LINE#         26
+BL51 BANKED LINKER/LOCATER V6.22                                                      06/18/2015  22:07:11  PAGE 4
+
+
+  C:0212H         LINE#         27
+  C:0213H         LINE#         28
+  C:0216H         LINE#         29
+  C:0218H         LINE#         30
+  -------         ENDPROC       _UART_SENDBYTE
+  -------         PROC          MAIN
+  C:0170H         LINE#         32
+  C:0170H         LINE#         33
+  C:0170H         LINE#         34
+  C:0173H         LINE#         35
+  C:017CH         LINE#         36
+  C:017FH         LINE#         37
+  C:0182H         LINE#         38
+  C:018DH         LINE#         39
+  C:0190H         LINE#         40
+  C:0190H         LINE#         41
+  C:0190H         LINE#         43
+  -------         ENDPROC       MAIN
+  -------         PROC          UART_ISR
+  C:0200H         LINE#         46
+  C:0200H         LINE#         48
+  C:0203H         LINE#         49
+  C:0203H         LINE#         50
+  C:0205H         LINE#         51
+  C:0205H         LINE#         52
+  C:0208H         LINE#         53
+  C:0208H         LINE#         54
+  C:020AH         LINE#         55
+  C:020DH         LINE#         56
+  C:020DH         LINE#         57
+  -------         ENDPROC       UART_ISR
+  -------         ENDMOD        MAIN
+
+  -------         MODULE        DP_PRINT_LIB
+  C:0000H         SYMBOL        _ICE_DUMMY_
+  C:0019H         PUBLIC        print_And_Line
+  C:0192H         PUBLIC        _SetChinesemode
+  C:00B2H         PUBLIC        _CheckPassWord
+  C:01A8H         PUBLIC        InitializePrint
+  C:0003H         PUBLIC        _PrintGoPage
+  D:000FH         SYMBOL        gucCheckPassWord
+  C:0146H         PUBLIC        _Print_ASCII
+  C:01F1H         PUBLIC        DisChineseChar
+  C:01E2H         PUBLIC        SelChineseChar
+  -------         PROC          _CHECKPASSWORD
+  D:0001H         SYMBOL        InputPassWord
+  C:00B2H         LINE#         5
+  C:00B2H         LINE#         6
+  C:00B2H         LINE#         7
+  C:00FCH         LINE#         9
+  C:00FCH         LINE#         10
+  C:00FFH         LINE#         11
+  C:00FFH         LINE#         12
+  -------         ENDPROC       _CHECKPASSWORD
+  -------         PROC          PRINT_AND_LINE
+  C:0019H         LINE#         23
+  C:0019H         LINE#         24
+BL51 BANKED LINKER/LOCATER V6.22                                                      06/18/2015  22:07:11  PAGE 5
+
+
+  C:0019H         LINE#         25
+  C:001DH         LINE#         27
+  C:0022H         LINE#         28
+  -------         ENDPROC       PRINT_AND_LINE
+  -------         PROC          _PRINT_ASCII
+  D:0008H         SYMBOL        Str
+  D:000BH         SYMBOL        StrLen
+  C:0146H         LINE#         30
+  C:014EH         LINE#         31
+  C:014EH         LINE#         32
+  C:0152H         LINE#         34
+  C:0156H         LINE#         35
+  C:0156H         LINE#         36
+  C:016BH         LINE#         37
+  C:016DH         LINE#         38
+  C:016FH         LINE#         39
+  -------         ENDPROC       _PRINT_ASCII
+  -------         PROC          INITIALIZEPRINT
+  C:01A8H         LINE#         184
+  C:01A8H         LINE#         185
+  C:01A8H         LINE#         186
+  C:01ACH         LINE#         188
+  C:01B1H         LINE#         189
+  C:01B6H         LINE#         190
+  C:01BBH         LINE#         191
+  -------         ENDPROC       INITIALIZEPRINT
+  -------         PROC          _PRINTGOPAGE
+  D:000DH         SYMBOL        nstep
+  C:0003H         LINE#         218
+  C:0005H         LINE#         219
+  C:0005H         LINE#         220
+  C:0009H         LINE#         223
+  C:000EH         LINE#         224
+  C:0013H         LINE#         225
+  C:0018H         LINE#         226
+  -------         ENDPROC       _PRINTGOPAGE
+  -------         PROC          _SETCHINESEMODE
+  D:000EH         SYMBOL        opt
+  C:0192H         LINE#         488
+  C:0194H         LINE#         489
+  C:0194H         LINE#         490
+  C:0198H         LINE#         493
+  C:019DH         LINE#         494
+  C:01A2H         LINE#         495
+  C:01A7H         LINE#         496
+  -------         ENDPROC       _SETCHINESEMODE
+  -------         PROC          SELCHINESECHAR
+  C:01E2H         LINE#         499
+  C:01E2H         LINE#         500
+  C:01E2H         LINE#         501
+  C:01E6H         LINE#         504
+  C:01EBH         LINE#         505
+  C:01F0H         LINE#         506
+  -------         ENDPROC       SELCHINESECHAR
+  -------         PROC          DISCHINESECHAR
+  C:01F1H         LINE#         508
+  C:01F1H         LINE#         509
+BL51 BANKED LINKER/LOCATER V6.22                                                      06/18/2015  22:07:11  PAGE 6
+
+
+  C:01F1H         LINE#         510
+  C:01F5H         LINE#         513
+  C:01FAH         LINE#         514
+  C:01FFH         LINE#         515
+  -------         ENDPROC       DISCHINESECHAR
+  -------         ENDMOD        DP_PRINT_LIB
+
+  -------         MODULE        ?C?CLDPTR
+  C:0100H         PUBLIC        ?C?CLDPTR
+  -------         ENDMOD        ?C?CLDPTR
+
+  -------         MODULE        ?C?CLDOPTR
+  C:0119H         PUBLIC        ?C?CLDOPTR
+  -------         ENDMOD        ?C?CLDOPTR
+
+*** WARNING L16: UNCALLED SEGMENT, IGNORED FOR OVERLAY PROCESS
+    SEGMENT: ?PR?_PRINTGOPAGE?DP_PRINT_LIB
+
+*** WARNING L16: UNCALLED SEGMENT, IGNORED FOR OVERLAY PROCESS
+    SEGMENT: ?PR?_SETCHINESEMODE?DP_PRINT_LIB
+
+*** WARNING L16: UNCALLED SEGMENT, IGNORED FOR OVERLAY PROCESS
+    SEGMENT: ?PR?DISCHINESECHAR?DP_PRINT_LIB
+
+Program Size: data=17.0 xdata=0 code=541
+LINK/LOCATE RUN COMPLETE.  3 WARNING(S),  0 ERROR(S)
