@@ -264,6 +264,43 @@ static void printSmileyTest() {
   heap_caps_free(gray);
 }
 
+// GS v 0 printed garbled ASCII instead of an image, suggesting the DP-628
+// doesn't recognize that raster command at all. This probes the older,
+// more universally-supported ESC * bit image command instead, printing
+// two labeled solid-black test bars (8-dot and 24-dot density) so it's
+// obvious from the paper which command (if either) the printer actually
+// understands.
+static void printEscStarProbe() {
+  const int columns = 64;
+
+  printerSerial.print("ESC*8dot below:\n");
+  printerSerial.write(0x1B); // ESC
+  printerSerial.write('*');
+  printerSerial.write((uint8_t)0); // m=0, 8-dot single density
+  printerSerial.write((uint8_t)(columns & 0xFF));
+  printerSerial.write((uint8_t)((columns >> 8) & 0xFF));
+  for (int i = 0; i < columns; i++) {
+    printerSerial.write((uint8_t)0xFF); // solid black column, 8 dots tall
+  }
+  printerSerial.write('\n');
+  printerSerial.write('\n');
+
+  printerSerial.print("ESC*24dot below:\n");
+  printerSerial.write(0x1B); // ESC
+  printerSerial.write('*');
+  printerSerial.write((uint8_t)33); // m=33, 24-dot double density
+  printerSerial.write((uint8_t)(columns & 0xFF));
+  printerSerial.write((uint8_t)((columns >> 8) & 0xFF));
+  for (int i = 0; i < columns * 3; i++) {
+    printerSerial.write((uint8_t)0xFF); // solid black column, 24 dots tall (3 bytes/column)
+  }
+  printerSerial.write('\n');
+  printerSerial.write('\n');
+  printerSerial.write('\n');
+
+  Serial.println("PRINTER: ESC* probe sent");
+}
+
 static void printPhoto(camera_fb_t *fb) {
   int printHeight = PRINTER_WIDTH_DOTS * fb->height / fb->width;
 
@@ -345,12 +382,12 @@ void loop() {
     if (cameraReady) {
       renderCameraFrame();
     }
-    // printer-test branch: button press prints a synthetic smiley face
-    // instead of the camera capture flow, to isolate the raster-command
-    // path from the camera->bitmap conversion path.
+    // printer-test branch: button press probes ESC * bit-image support,
+    // since GS v 0 (printSmileyTest) came out as garbled text instead of
+    // an image — the printer likely doesn't recognize that command.
     if (buttonPressedEdge) {
-      Serial.println("PRINTER TEST: printing smiley");
-      printSmileyTest();
+      Serial.println("PRINTER TEST: ESC* probe");
+      printEscStarProbe();
     }
     break;
 
