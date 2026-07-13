@@ -112,24 +112,28 @@ static bool initCamera() {
 }
 
 static void blitFrameToTFT(camera_fb_t *fb) {
-  // drawRGBBitmap() resets the address window on every pixel, which is
-  // far too slow for a live feed (visible as flicker/tearing). Set the
-  // window once and burst the whole frame instead. Camera RGB565 bytes
-  // are already in the big-endian order the SPI panel wants, so pass
-  // bigEndian=true and skip a manual byte-swap pass.
-  tft.startWrite();
-  tft.setAddrWindow(0, 0, fb->width, fb->height);
-  tft.writePixels((uint16_t *)fb->buf, fb->width * fb->height, true, true);
-  tft.endWrite();
+  // Reverted to the per-pixel path: the bulk writePixels(bigEndian=true)
+  // version was never actually verified on hardware before steps 5/6 built
+  // on top of it, and turned out to render nothing at all. This is slower
+  // (visible flicker/tearing) but confirmed working — swap camera's
+  // big-endian RGB565 bytes to what Adafruit_SPITFT expects, then blit.
+  uint16_t *pixels = (uint16_t *)fb->buf;
+  tft.swapBytes(pixels, fb->width * fb->height);
+  tft.drawRGBBitmap(0, 0, pixels, fb->width, fb->height);
 }
+
+static uint32_t frameCount = 0;
+static uint32_t frameGetFailures = 0;
 
 static void renderCameraFrame() {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
+    frameGetFailures++;
     return;
   }
   blitFrameToTFT(fb);
   esp_camera_fb_return(fb);
+  frameCount++;
 }
 
 // The sensor free-runs into its DMA buffer even when idle, so the first
@@ -313,6 +317,7 @@ void loop() {
   uint32_t now = millis();
   if (now - lastBeat >= 1000) {
     lastBeat = now;
-    Serial.printf("heartbeat t=%lu ms\n", now);
+    Serial.printf("heartbeat t=%lu ms, frames=%lu, fb_get failures=%lu\n", now,
+                  frameCount, frameGetFailures);
   }
 }
