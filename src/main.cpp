@@ -4,6 +4,7 @@
 #include <Adafruit_ILI9341.h>
 #include <esp_camera.h>
 #include <esp_heap_caps.h>
+#include <math.h>
 
 #include "pins.h"
 
@@ -41,7 +42,6 @@
 
 static const uint32_t PRINTER_BAUD = 9600;
 static const int PRINTER_WIDTH_DOTS = 384; // unconfirmed — adjust if prints come out wrong width
-static const int PRINTER_WIDTH_BYTES = PRINTER_WIDTH_DOTS / 8;
 static const uint32_t PREVIEW_HOLD_MS = 1500; // how long to show the frozen capture before printing
 
 static SPIClass tftSPI(FSPI);
@@ -181,6 +181,89 @@ static inline uint16_t readFramePixel(camera_fb_t *fb, int x, int y) {
   return (fb->buf[idx] << 8) | fb->buf[idx + 1];
 }
 
+// Sends a grayscale buffer (0=black, 255=white per byte, already dithered
+// or otherwise pure black/white) as an ESC/POS raster bit image (GS v 0).
+static void sendRasterImage(uint8_t *gray, int width, int height) {
+  int widthBytes = width / 8;
+
+  Serial.printf("PRINTER: DTR pin reads %d before send\n", digitalRead(PRINTER_DTR_PIN));
+
+  // ESC/POS raster bit image: GS v 0 m xL xH yL yH [data]
+  printerSerial.write(0x1D);
+  printerSerial.write('v');
+  printerSerial.write('0');
+  printerSerial.write((uint8_t)0); // m = normal
+  printerSerial.write((uint8_t)(widthBytes & 0xFF));
+  printerSerial.write((uint8_t)((widthBytes >> 8) & 0xFF));
+  printerSerial.write((uint8_t)(height & 0xFF));
+  printerSerial.write((uint8_t)((height >> 8) & 0xFF));
+
+  uint8_t *rowBuf = (uint8_t *)alloca(widthBytes);
+  for (int y = 0; y < height; y++) {
+    memset(rowBuf, 0, widthBytes);
+    for (int x = 0; x < width; x++) {
+      if (gray[y * width + x] == 0) { // black dot
+        rowBuf[x / 8] |= 0x80 >> (x % 8);
+      }
+    }
+    printerSerial.write(rowBuf, widthBytes);
+  }
+
+  printerSerial.write('\n');
+  printerSerial.write('\n');
+  printerSerial.write('\n'); // feed clear of the tear bar
+
+  Serial.printf("PRINTER: DTR pin reads %d after send\n", digitalRead(PRINTER_DTR_PIN));
+  Serial.printf("PRINTER: raster image sent (%dx%d dots)\n", width, height);
+}
+
+// Procedurally draws a big smiley face into a gray buffer (0=black,
+// 255=white), for isolating printer/raster-command bugs from the
+// camera-capture path.
+static void drawSmiley(uint8_t *gray, int w, int h) {
+  int cx = w / 2, cy = h / 2;
+  double faceR = fmin(w, h) * 0.42;
+  double stroke = fmax(2.0, faceR / 18.0);
+  double eyeR = faceR * 0.10;
+  double eyeOffsetX = faceR * 0.38;
+  double eyeOffsetY = faceR * 0.25;
+  double smileR = faceR * 0.55;
+  double smileCy = cy + faceR * 0.05;
+
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++) {
+      bool black = false;
+
+      double dist = sqrt((double)(x - cx) * (x - cx) + (double)(y - cy) * (y - cy));
+      if (fabs(dist - faceR) < stroke) black = true; // face outline
+
+      double ldx = x - (cx - eyeOffsetX), ldy = y - (cy - eyeOffsetY);
+      if (sqrt(ldx * ldx + ldy * ldy) < eyeR) black = true; // left eye
+
+      double rdx = x - (cx + eyeOffsetX), rdy = y - (cy - eyeOffsetY);
+      if (sqrt(rdx * rdx + rdy * rdy) < eyeR) black = true; // right eye
+
+      double sdx = x - cx, sdy = y - smileCy;
+      double sdist = sqrt(sdx * sdx + sdy * sdy);
+      if (y > cy && fabs(sdist - smileR) < stroke) black = true; // smile arc
+
+      gray[y * w + x] = black ? 0 : 255;
+    }
+  }
+}
+
+static void printSmileyTest() {
+  int size = PRINTER_WIDTH_DOTS; // square test image
+  uint8_t *gray = (uint8_t *)heap_caps_malloc(size * size, MALLOC_CAP_SPIRAM);
+  if (!gray) {
+    Serial.println("PRINTER: out of memory building smiley buffer, skipping print");
+    return;
+  }
+  drawSmiley(gray, size, size);
+  sendRasterImage(gray, size, size);
+  heap_caps_free(gray);
+}
+
 static void printPhoto(camera_fb_t *fb) {
   int printHeight = PRINTER_WIDTH_DOTS * fb->height / fb->width;
 
@@ -224,36 +307,7 @@ static void printPhoto(camera_fb_t *fb) {
     }
   }
 
-  Serial.printf("PRINTER: DTR pin reads %d before send\n", digitalRead(PRINTER_DTR_PIN));
-
-  // ESC/POS raster bit image: GS v 0 m xL xH yL yH [data]
-  printerSerial.write(0x1D);
-  printerSerial.write('v');
-  printerSerial.write('0');
-  printerSerial.write((uint8_t)0); // m = normal
-  printerSerial.write((uint8_t)(PRINTER_WIDTH_BYTES & 0xFF));
-  printerSerial.write((uint8_t)((PRINTER_WIDTH_BYTES >> 8) & 0xFF));
-  printerSerial.write((uint8_t)(printHeight & 0xFF));
-  printerSerial.write((uint8_t)((printHeight >> 8) & 0xFF));
-
-  uint8_t rowBuf[PRINTER_WIDTH_BYTES];
-  for (int y = 0; y < printHeight; y++) {
-    memset(rowBuf, 0, sizeof(rowBuf));
-    for (int x = 0; x < PRINTER_WIDTH_DOTS; x++) {
-      if (gray[y * PRINTER_WIDTH_DOTS + x] == 0) { // black dot
-        rowBuf[x / 8] |= 0x80 >> (x % 8);
-      }
-    }
-    printerSerial.write(rowBuf, PRINTER_WIDTH_BYTES);
-  }
-
-  printerSerial.write('\n');
-  printerSerial.write('\n');
-  printerSerial.write('\n'); // feed clear of the tear bar
-
-  Serial.printf("PRINTER: DTR pin reads %d after send\n", digitalRead(PRINTER_DTR_PIN));
-  Serial.printf("PRINTER: photo printed (%dx%d dots)\n", PRINTER_WIDTH_DOTS, printHeight);
-
+  sendRasterImage(gray, PRINTER_WIDTH_DOTS, printHeight);
   heap_caps_free(gray);
 }
 
@@ -291,16 +345,12 @@ void loop() {
     if (cameraReady) {
       renderCameraFrame();
     }
-    if (buttonPressedEdge && cameraReady) {
-      capturedFrame = captureFreshFrame();
-      if (capturedFrame) {
-        blitFrameToTFT(capturedFrame);
-        capturedAtMs = millis();
-        appState = STATE_CAPTURED;
-        Serial.println("STATE: captured, showing preview");
-      } else {
-        Serial.println("STATE: capture failed, staying live");
-      }
+    // printer-test branch: button press prints a synthetic smiley face
+    // instead of the camera capture flow, to isolate the raster-command
+    // path from the camera->bitmap conversion path.
+    if (buttonPressedEdge) {
+      Serial.println("PRINTER TEST: printing smiley");
+      printSmileyTest();
     }
     break;
 
