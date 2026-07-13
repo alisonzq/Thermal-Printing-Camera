@@ -17,11 +17,11 @@
 #define PRINTER_RX_PIN  20 // ESP32 RX <- printer TX (through external voltage divider, printer TX is 5V)
 #define PRINTER_DTR_PIN 21 // busy/flow-control, active meaning TBD
 
-// --- TFT (ILI9341, SPI) — not yet wired ---
+// --- TFT (ILI9341, SPI) — wired ---
 #define TFT_MOSI_PIN 41
 #define TFT_SCK_PIN  14
 #define TFT_CS_PIN   1
-#define TFT_DC_PIN   2   // shares STATUS_LED_PIN
+#define TFT_DC_PIN   2   // shares STATUS_LED_PIN — library drives this pin during SPI transfers
 #define TFT_RST_PIN  42
 // Backlight: tied straight to 3.3V (no PWM dimming pin free yet).
 
