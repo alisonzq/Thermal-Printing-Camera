@@ -83,6 +83,11 @@ static bool initCamera() {
     Serial.printf("CAM: init failed, err=0x%x\n", err);
     return false;
   }
+
+  // OV2640 is mounted upside down on this board — flip vertically.
+  sensor_t *sensor = esp_camera_sensor_get();
+  sensor->set_vflip(sensor, 1);
+
   return true;
 }
 
