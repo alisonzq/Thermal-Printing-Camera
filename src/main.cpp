@@ -76,7 +76,9 @@ static bool initCamera() {
   config.jpeg_quality = 12;
   config.fb_count = psramFound() ? 2 : 1;
   config.fb_location = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
-  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+  // Drop stale queued frames and grab the most recent one instead of the
+  // oldest — pairs with the discard-then-grab in captureAndDump().
+  config.grab_mode = CAMERA_GRAB_LATEST;
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
@@ -95,6 +97,14 @@ static void captureAndDump() {
   if (!cameraReady) {
     Serial.println("CAM: not initialized, skipping capture");
     return;
+  }
+
+  // The sensor free-runs into its DMA buffer even when idle, so the first
+  // fb_get() after a period of no captures returns a stale frame from
+  // before the button press. Throw one away, then grab a fresh one.
+  camera_fb_t *stale = esp_camera_fb_get();
+  if (stale) {
+    esp_camera_fb_return(stale);
   }
 
   camera_fb_t *fb = esp_camera_fb_get();
