@@ -10,9 +10,10 @@ receipt-style layout) on a thermal printer via button press.
   (via CH343 USB-UART bridge) for programming.
 - **Display**: 2.8" SPI TFT, ILI9341 driver (no touch assumed — update
   this file if the panel also has an XPT2046 touch controller).
-- **Buttons**: standalone 3-pin push-button modules (VCC / GND / Signal,
-  onboard pull resistor). Active-high: idle = LOW, pressed = HIGH,
-  unless testing shows otherwise.
+- **Buttons**: bare 2-terminal push buttons (4-leg tactile switches,
+  internally paired). GPIO -> GND only, no VCC leg, no external
+  resistor — ESP32 internal pull-up (`INPUT_PULLUP`). Active-low:
+  idle = HIGH, pressed = LOW.
 - **Printer**: DAPPER DP-628, 58mm thermal printer mechanism + driver
   board (Xiamen Dapu Electronic Technology). Interfaces: USB (unused —
   data-only virtual COM, ignore it), RS232, TTL (the one we're using).
@@ -45,8 +46,11 @@ Confirmed against the official Freenove ESP32-S3 WROOM pinout diagram.
 | DP-628 | GND | common GND | wired |
 | DP-628 | VH (power, 5–9V) | **external 5–9V/2A supply — never the ESP32's 5V pin.** Share GND with ESP32/printer only. | wired |
 | Button 1 (shutter) | Signal | GPIO38 | wired |
-| Button 1 | VCC | 3.3V (never 5V) | wired |
 | Button 1 | GND | GND | wired |
+| Button 2 (menu) | Signal | GPIO39 | wired |
+| Button 3 (up) | Signal | GPIO40 | wired |
+| Button 4 (down/select) | Signal | GPIO47 | wired |
+| Buttons 2–4 | GND | GND, same as Button 1 | wired |
 | TFT | MOSI | GPIO41 | wired |
 | TFT | SCK | GPIO14 | not yet wired |
 | TFT | CS | GPIO1 | not yet wired |1
@@ -54,8 +58,8 @@ Confirmed against the official Freenove ESP32-S3 WROOM pinout diagram.
 | TFT | RST | GPIO42 | not yet wired |
 | TFT | LED (backlight) | 3.3V direct (GPIO41 now taken by MOSI, so no PWM dimming option unless moved to another free pin) | not yet wired |
 
-Free pins remaining for more buttons or backlight PWM later: GPIO39,
-40, 47.
+No free pins remaining without reassigning something above — GPIO39,
+40, 47 are now the menu/up/down-select UI buttons.
 
 ## Known gotchas (verified in prior discussion, don't relitigate)
 
@@ -71,8 +75,10 @@ Free pins remaining for more buttons or backlight PWM later: GPIO39,
 - Printer's USB-C port is a separate, independent data interface
   (same ESC/POS commands) meant for direct PC/phone use — not needed
   and not used in this build.
-- Button modules have their own onboard resistor — use plain `INPUT`
-  in code, not `INPUT_PULLUP`.
+- Buttons are bare tactile switches wired GPIO->GND only — code uses
+  `INPUT_PULLUP` and reads pressed as `LOW` (inverted from the earlier
+  active-high button-module wiring; switched over deliberately to cut
+  the wiring down to 2 wires per button).
 - Confirm whether the Freenove board is actually the camera variant
   (FNK0085) — this brief assumes it is, since no separate camera
   module was in the parts list.
@@ -97,3 +103,5 @@ Free pins remaining for more buttons or backlight PWM later: GPIO39,
 5. Bring up printer UART independently (send a raw ESC/POS test line)
    before wiring it into the camera flow.
 6. Wire buttons, add capture → preview → print state machine.
+7. Wire the 3 extra UI buttons, add a settings menu and an in-memory
+   (PSRAM, session-only) gallery of recent captures with reprint.

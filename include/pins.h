@@ -28,7 +28,15 @@
 #define CAM_RESET_PIN -1 // not broken out on this board
 
 // --- Button 1 (shutter) — wired ---
-#define BUTTON1_PIN 38     // active-high: idle LOW, pressed HIGH. Plain INPUT, no INPUT_PULLUP (onboard resistor on the module).
+// Bare push button, GPIO -> GND only, ESP32 internal pull-up (INPUT_PULLUP).
+// Active-low: idle HIGH, pressed LOW. No external resistor, no VCC leg.
+#define BUTTON1_PIN 38
+
+// --- UI buttons (menu/gallery navigation) — wired ---
+// Same bare-button / INPUT_PULLUP / active-low wiring as BUTTON1.
+#define BUTTON_MENU_PIN       39 // toggles settings menu open/closed; also backs out of menu/gallery to live camera view
+#define BUTTON_UP_PIN         40 // menu: previous item / increase value while editing. gallery: older photo
+#define BUTTON_DOWNSELECT_PIN 47 // short press: menu next item / decrease value, gallery newer photo. Long press (>=500ms): select/confirm, or print in gallery
 
 // --- DP-628 thermal printer (TTL/ESC-POS) — wired ---
 #define PRINTER_TX_PIN  19 // ESP32 TX -> printer RX
@@ -43,5 +51,5 @@
 #define TFT_RST_PIN  42
 // Backlight: tied straight to 3.3V (no PWM dimming pin free yet).
 
-// --- Free pins available for more buttons / backlight PWM later ---
-// GPIO39, GPIO40, GPIO47
+// --- Free pins remaining ---
+// none currently free without reassigning something above
