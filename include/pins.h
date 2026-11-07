@@ -38,12 +38,18 @@
 #define BUTTON_UP_PIN         40 // menu: previous item / increase value while editing. gallery: older photo
 #define BUTTON_DOWNSELECT_PIN 47 // short press: menu next item / decrease value, gallery newer photo. Long press (>=500ms): select/confirm, or print in gallery
 
-// --- DP-628 thermal printer (TTL/ESC-POS) — wired ---
-#define PRINTER_TX_PIN  19 // ESP32 TX -> printer RX
-#define PRINTER_RX_PIN  20 // ESP32 RX <- printer TX (through external voltage divider, printer TX is 5V)
-#define PRINTER_DTR_PIN 21 // busy/flow-control, active meaning TBD
+// --- DP-628 thermal printer — REMOVED from this build ---
+// Its old pins (19/20/21) now belong to the touch controller below. Printer
+// code in main.cpp is compiled out (ENABLE_PRINTER 0); it needs new pins
+// before it can come back.
 
-// --- TFT (ILI9341, SPI) — wired ---
+// --- Touch controller (XPT2046 on the TFT module) — wired ---
+// T_CLK shares TFT_SCK_PIN (14). T_IRQ is not wired — touch is polled.
+#define TOUCH_CS_PIN  19 // T_CS
+#define TOUCH_DO_PIN  20 // T_DO -> ESP32 (SPI MISO). No voltage divider — XPT2046 is 3.3V.
+#define TOUCH_DIN_PIN 21 // T_DIN. Own wire, not shared with TFT MOSI — firmware mirrors the SPI MOSI signal onto this pin.
+
+// --- TFT display (ILI9341, SPI) — wired ---
 #define TFT_MOSI_PIN 41
 #define TFT_SCK_PIN  14
 #define TFT_CS_PIN   1

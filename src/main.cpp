@@ -4,8 +4,17 @@
 #include <Adafruit_ILI9341.h>
 #include <esp_camera.h>
 #include <esp_heap_caps.h>
+#include <soc/gpio_sig_map.h> // FSPID_OUT_IDX, for mirroring MOSI onto the touch DIN pin
 
 #include "pins.h"
+
+// The DP-628 printer has been removed and its pins (19/20/21) now belong to
+// the touch controller. Printer code is kept below for a future printer but
+// compiled out.
+#define ENABLE_PRINTER 0
+#if ENABLE_PRINTER
+#error "GPIO19/20/21 are now the touch controller — assign new printer pins in pins.h first"
+#endif
 
 // Step 1: blink/serial-print bring-up (heartbeat + shutter button) — done.
 // Step 2: TFT alone, SPI init + test pattern — done.
@@ -23,6 +32,9 @@
 // dither threshold, vertical flip) and a session-only gallery of the
 // last few captures (kept in PSRAM, reprintable). MENU always backs out
 // to live camera view from anywhere in the UI.
+// Step 8: printer removed, XPT2046 touch added on its old pins. Touch works
+// alongside the physical buttons: tap live view = shutter, tap a menu row
+// to select / tap again to open, tap left/right in the gallery to browse.
 //
 // DP-628 baud rate and print width are NOT confirmed from an official
 // datasheet (see CLAUDE.md known gotchas): 9600 8N1 is the common default
@@ -53,9 +65,31 @@ static const int GALLERY_W = 320;      // matches FRAMESIZE_QVGA / TFT resolutio
 static const int GALLERY_H = 240;
 static const int GALLERY_FRAME_BYTES = GALLERY_W * GALLERY_H * 2; // RGB565
 
+// --- Touch (XPT2046) ---
+// Calibration: every tap logs "TOUCH raw=(..) screen=(..)" to Serial. If taps
+// land in the wrong place, tap the four corners, read the raw values, and
+// adjust these. If moving your finger right moves the point down, flip
+// TOUCH_SWAP_XY; if it moves the wrong way along an axis, flip that axis's
+// INVERT flag.
+static const uint32_t TOUCH_SPI_HZ = 2000000;  // XPT2046 max is ~2.5MHz
+static const int TOUCH_Z_THRESHOLD = 400;      // pressure below this = not touched
+static const int TOUCH_RAW_X_MIN = 300, TOUCH_RAW_X_MAX = 3800; // raw range along screen X
+static const int TOUCH_RAW_Y_MIN = 300, TOUCH_RAW_Y_MAX = 3800; // raw range along screen Y
+static const bool TOUCH_SWAP_XY = true;   // panel is used in landscape (rotation 1)
+static const bool TOUCH_INVERT_X = false;
+static const bool TOUCH_INVERT_Y = false;
+static const uint32_t TOUCH_RELEASE_MS = 80; // ignore brief dropouts mid-press
+
+// Menu layout, shared by drawMenu() and touch hit-testing. 8 rows of 23px
+// fit between the header and the footer hint on the 240px-tall screen.
+static const int MENU_TOP = 36;
+static const int MENU_ROW_H = 23;
+
 static SPIClass tftSPI(FSPI);
 static Adafruit_ILI9341 tft(&tftSPI, TFT_DC_PIN, TFT_CS_PIN, TFT_RST_PIN);
+#if ENABLE_PRINTER
 static HardwareSerial printerSerial(1);
+#endif
 static sensor_t *camSensor = nullptr;
 
 enum AppState { STATE_LIVE, STATE_CAPTURED, STATE_PRINTING };
@@ -108,6 +142,8 @@ static bool lastMenuState = false;
 static bool lastUpState = false;
 static bool lastDownSelectState = false;
 static uint32_t downSelectPressStartMs = 0;
+static bool lastTouchState = false;
+static uint32_t lastTouchSeenMs = 0;
 
 static bool cameraReady = false;
 static uint32_t frameCount = 0;
@@ -226,6 +262,74 @@ static void drawStatusBanner(const char *text) {
   tft.print(text);
 }
 
+// --- Touch (XPT2046) ---
+// Shares the TFT's SPI bus (same SCK, MISO on TOUCH_DO_PIN, MOSI mirrored
+// onto TOUCH_DIN_PIN in setup()). Only the chip whose CS is low listens, so
+// the two never collide. Polled once per loop — T_IRQ isn't wired.
+
+// Last raw readings, printed once a second with the heartbeat for debugging.
+static int touchDbgZ1 = 0, touchDbgZ2 = 0, touchDbgX = 0, touchDbgY = 0;
+
+static uint16_t touchRead12(uint8_t cmd) {
+  tftSPI.transfer(cmd);
+  return tftSPI.transfer16(0) >> 3; // 12-bit result, MSB first after one busy bit
+}
+
+static bool readTouchRaw(int &rawX, int &rawY) {
+  tftSPI.beginTransaction(SPISettings(TOUCH_SPI_HZ, MSBFIRST, SPI_MODE0));
+  digitalWrite(TOUCH_CS_PIN, LOW);
+
+  // Pressure from the two Z measurements — light or no contact reads low.
+  int z1 = touchRead12(0xB1);
+  int z2 = touchRead12(0xC1);
+  int z = z1 + 4095 - z2;
+  // z1 == z2 == 0 means MISO is stuck low (controller not answering), which
+  // would otherwise compute as maximum pressure and look permanently pressed.
+  if (z1 == 0 && z2 == 0) z = 0;
+
+  long sumX = 0, sumY = 0;
+  const int samples = 4; // average a few readings — resistive touch is noisy
+  if (z >= TOUCH_Z_THRESHOLD) {
+    for (int i = 0; i < samples; i++) {
+      sumX += touchRead12(0xD1);
+      sumY += touchRead12(0x91);
+    }
+  }
+  touchRead12(0xD0); // power down between reads
+
+  digitalWrite(TOUCH_CS_PIN, HIGH);
+  tftSPI.endTransaction();
+
+  touchDbgZ1 = z1;
+  touchDbgZ2 = z2;
+  touchDbgX = z >= TOUCH_Z_THRESHOLD ? sumX / samples : -1;
+  touchDbgY = z >= TOUCH_Z_THRESHOLD ? sumY / samples : -1;
+
+  if (z < TOUCH_Z_THRESHOLD) return false;
+  rawX = sumX / samples;
+  rawY = sumY / samples;
+  return true;
+}
+
+// Converts a raw reading into TFT pixel coordinates (landscape, 320x240).
+static bool readTouchScreen(int &screenX, int &screenY, int &rawX, int &rawY) {
+  if (!readTouchRaw(rawX, rawY)) return false;
+  int alongX = TOUCH_SWAP_XY ? rawY : rawX;
+  int alongY = TOUCH_SWAP_XY ? rawX : rawY;
+  screenX = constrain(map(alongX, TOUCH_RAW_X_MIN, TOUCH_RAW_X_MAX, 0, tft.width() - 1), 0, tft.width() - 1);
+  screenY = constrain(map(alongY, TOUCH_RAW_Y_MIN, TOUCH_RAW_Y_MAX, 0, tft.height() - 1), 0, tft.height() - 1);
+  if (TOUCH_INVERT_X) screenX = tft.width() - 1 - screenX;
+  if (TOUCH_INVERT_Y) screenY = tft.height() - 1 - screenY;
+  return true;
+}
+
+// Which menu row a screen Y coordinate falls in, or -1 for header/footer.
+static int menuRowAt(int y) {
+  if (y < MENU_TOP - 2) return -1;
+  int row = (y - (MENU_TOP - 2)) / MENU_ROW_H;
+  return row < MENU_ITEM_COUNT ? row : -1;
+}
+
 // --- Gallery (session-only, PSRAM ring buffer) ---
 
 static bool allocateGalleryBuffers() {
@@ -295,17 +399,15 @@ static void drawMenu() {
   tft.print("SETTINGS");
   tft.drawFastHLine(0, 28, tft.width(), ILI9341_WHITE);
 
-  const int rowHeight = 28;
-  const int top = 36;
   char valueBuf[24];
   for (int i = 0; i < MENU_ITEM_COUNT; i++) {
-    int y = top + i * rowHeight;
+    int y = MENU_TOP + i * MENU_ROW_H;
     bool selected = (i == menuSelectedIndex);
     if (selected) {
       uint16_t bg = menuEditing ? ILI9341_ORANGE : ILI9341_BLUE;
-      tft.fillRect(0, y - 2, tft.width(), rowHeight - 2, bg);
+      tft.fillRect(0, y - 2, tft.width(), MENU_ROW_H - 1, bg);
     }
-    tft.setCursor(8, y + 4);
+    tft.setCursor(8, y + 2);
     tft.setTextColor(ILI9341_WHITE);
     tft.print(menuItemLabel(i));
     menuItemValue(i, valueBuf, sizeof(valueBuf));
@@ -313,16 +415,16 @@ static void drawMenu() {
       int16_t x1, y1;
       uint16_t w, h;
       tft.getTextBounds(valueBuf, 0, 0, &x1, &y1, &w, &h);
-      tft.setCursor(tft.width() - w - 8, y + 4);
+      tft.setCursor(tft.width() - w - 8, y + 2);
       tft.print(valueBuf);
     }
   }
 
   tft.setTextSize(1);
   tft.setTextColor(ILI9341_YELLOW);
-  tft.setCursor(8, tft.height() - 14);
-  tft.print(menuEditing ? "UP/DN adjust, hold SEL to confirm"
-                        : "UP/DN select, hold SEL to open, MENU to exit");
+  tft.setCursor(8, tft.height() - 12);
+  tft.print(menuEditing ? "Tap row right +, left -. Tap elsewhere: done"
+                        : "Tap a row to select, tap again to open");
 }
 
 static void drawGallery() {
@@ -348,8 +450,8 @@ static void drawGallery() {
   if (galleryCount > 0) {
     tft.printf("%d/%d", galleryViewIndex + 1, galleryCount);
   }
-  tft.setCursor(tft.width() - 150, tft.height() - 14);
-  tft.print("UP/DN browse, hold SEL print");
+  tft.setCursor(tft.width() - 162, tft.height() - 14);
+  tft.print("Tap left/right to browse");
 }
 
 static void menuMoveSelection(int delta) {
@@ -414,6 +516,7 @@ static void menuActivateSelected() {
   }
 }
 
+#if ENABLE_PRINTER
 static void initPrinter() {
   printerSerial.begin(PRINTER_BAUD, SERIAL_8N1, PRINTER_RX_PIN, PRINTER_TX_PIN);
   pinMode(PRINTER_DTR_PIN, INPUT); // busy/flow-control line, active meaning TBD — just observing for now
@@ -508,6 +611,7 @@ static void printPhoto(const uint8_t *buf, int width, int height) {
 
   heap_caps_free(gray);
 }
+#endif // ENABLE_PRINTER
 
 void setup() {
   Serial.begin(115200);
@@ -524,11 +628,24 @@ void setup() {
   Serial.println("Thermal Printer Camera — booting");
   Serial.printf("PSRAM size: %u bytes\n", ESP.getPsramSize());
 
-  tftSPI.begin(TFT_SCK_PIN, -1 /* MISO not wired, write-only */, TFT_MOSI_PIN, TFT_CS_PIN);
+  // Keep the touch controller deselected so it ignores display traffic.
+  pinMode(TOUCH_CS_PIN, OUTPUT);
+  digitalWrite(TOUCH_CS_PIN, HIGH);
+
+  // MISO is the touch controller's T_DO — the display itself is still write-only.
+  tftSPI.begin(TFT_SCK_PIN, TOUCH_DO_PIN, TFT_MOSI_PIN, TFT_CS_PIN);
   tft.begin();
   tft.setRotation(1); // landscape
   drawTestPattern();
   Serial.println("TFT init + test pattern drawn");
+
+  // T_DIN is wired to its own pin rather than sharing the display's MOSI.
+  // The GPIO matrix can route one SPI output signal to several pins, so
+  // drive GPIO21 with the same MOSI signal — both chips see identical data,
+  // and only the one whose CS is low acts on it.
+  pinMode(TOUCH_DIN_PIN, OUTPUT);
+  pinMatrixOutAttach(TOUCH_DIN_PIN, FSPID_OUT_IDX, false, false);
+  Serial.println("TOUCH: XPT2046 on shared SPI bus");
 
   cameraReady = initCamera();
   Serial.printf("CAM: init %s\n", cameraReady ? "OK" : "FAILED");
@@ -536,8 +653,10 @@ void setup() {
   galleryAllocOk = allocateGalleryBuffers();
   Serial.printf("GALLERY: PSRAM alloc %s (%d slots)\n", galleryAllocOk ? "OK" : "FAILED", GALLERY_CAPACITY);
 
+#if ENABLE_PRINTER
   initPrinter();
   Serial.println("PRINTER: UART init done");
+#endif
 }
 
 void loop() {
@@ -569,6 +688,19 @@ void loop() {
     else downSelectShort = true;
   }
   lastDownSelectState = downSelectState;
+
+  // Touch: a "tap" fires once when a finger first lands. Brief dropouts
+  // mid-press (common on resistive panels) are bridged by TOUCH_RELEASE_MS
+  // so one press doesn't register as several taps.
+  int touchX = 0, touchY = 0, touchRawX = 0, touchRawY = 0;
+  bool touchNow = readTouchScreen(touchX, touchY, touchRawX, touchRawY);
+  if (touchNow) lastTouchSeenMs = millis();
+  bool touchState = touchNow || (millis() - lastTouchSeenMs < TOUCH_RELEASE_MS);
+  bool touchTap = touchState && !lastTouchState && touchNow;
+  lastTouchState = touchState;
+  if (touchTap) {
+    Serial.printf("TOUCH raw=(%d,%d) screen=(%d,%d)\n", touchRawX, touchRawY, touchX, touchY);
+  }
 
   // MENU button is the master mode toggle: from live camera it opens the
   // menu, and from anywhere in the menu/gallery it goes straight back to
@@ -603,6 +735,19 @@ void loop() {
       else menuActivateSelected(); // may switch uiMode to MODE_GALLERY or MODE_CAMERA
       needsRedraw = true;
     }
+    if (touchTap) {
+      int row = menuRowAt(touchY);
+      if (menuEditing) {
+        // While editing: right half of the row = +, left half = -, anywhere else = done.
+        if (row == menuSelectedIndex) menuAdjustValue(touchX >= tft.width() / 2 ? 1 : -1);
+        else menuEditing = false;
+      } else if (row >= 0) {
+        // First tap selects a row, tapping the selected row opens it.
+        if (row == menuSelectedIndex) menuActivateSelected();
+        else menuSelectedIndex = row;
+      }
+      needsRedraw = true;
+    }
     if (needsRedraw) {
       if (uiMode == MODE_MENU) drawMenu();
       else if (uiMode == MODE_GALLERY) drawGallery();
@@ -618,10 +763,18 @@ void loop() {
       galleryViewIndex = max(galleryViewIndex - 1, 0);
       needsRedraw = true;
     }
+#if ENABLE_PRINTER
     if (downSelectLong && galleryCount > 0) {
       drawStatusBanner("PRINTING...");
       GalleryImage &img = galleryImageAt(galleryViewIndex);
       printPhoto(img.pixels, GALLERY_W, GALLERY_H);
+      needsRedraw = true;
+    }
+#endif
+    if (touchTap && galleryCount > 0) {
+      // Left half = newer photo, right half = older.
+      if (touchX < tft.width() / 2) galleryViewIndex = max(galleryViewIndex - 1, 0);
+      else galleryViewIndex = min(galleryViewIndex + 1, galleryCount - 1);
       needsRedraw = true;
     }
     if (needsRedraw) drawGallery();
@@ -631,11 +784,12 @@ void loop() {
       if (cameraReady) {
         renderCameraFrame();
       }
-      if (shutterEdge && cameraReady) {
+      if ((shutterEdge || touchTap) && cameraReady) { // tap anywhere on live view = shutter
         capturedFrame = captureFreshFrame();
         if (capturedFrame) {
           pushToGallery(capturedFrame); // raw copy before blit swaps bytes in place
           blitFrameToTFT(capturedFrame);
+          drawStatusBanner(galleryAllocOk ? "SAVED TO GALLERY" : "CAPTURED");
           capturedAtMs = millis();
           appState = STATE_CAPTURED;
           Serial.println("STATE: captured, showing preview");
@@ -647,16 +801,20 @@ void loop() {
 
     case STATE_CAPTURED:
       if (millis() - capturedAtMs >= previewHoldMs) {
+#if ENABLE_PRINTER
         drawStatusBanner("PRINTING...");
+#endif
         appState = STATE_PRINTING;
       }
       break;
 
-    case STATE_PRINTING:
+    case STATE_PRINTING: // with no printer, this just releases the frame and returns to live view
+#if ENABLE_PRINTER
       printPhoto(capturedFrame->buf, capturedFrame->width, capturedFrame->height);
+#endif
       esp_camera_fb_return(capturedFrame);
       capturedFrame = nullptr;
-      Serial.println("STATE: print done, back to live preview");
+      Serial.println("STATE: preview done, back to live view");
       appState = STATE_LIVE;
       break;
     }
@@ -667,5 +825,8 @@ void loop() {
     lastBeat = now;
     Serial.printf("heartbeat t=%lu ms, frames=%lu, fb_get failures=%lu\n", now,
                   frameCount, frameGetFailures);
+    Serial.printf("TOUCH dbg z1=%d z2=%d x=%d y=%d touched=%d%s\n", touchDbgZ1, touchDbgZ2,
+                  touchDbgX, touchDbgY, lastTouchState,
+                  (touchDbgZ1 == 0 && touchDbgZ2 == 0) ? "  <- controller not answering, check wiring" : "");
   }
 }

@@ -8,16 +8,17 @@ receipt-style layout) on a thermal printer via button press.
 - **MCU**: Freenove ESP32-S3-WROOM CAM board (FNK0085) — OV2640 camera
   on-board, 8MB PSRAM (OPI mode), 8/16MB flash, microSD slot, USB-C
   (via CH343 USB-UART bridge) for programming.
-- **Display**: 2.8" SPI TFT, ILI9341 driver (no touch assumed — update
-  this file if the panel also has an XPT2046 touch controller).
+- **Display**: 2.8" SPI TFT, ILI9341 driver, with an XPT2046 resistive
+  touch controller on the same module (T_IRQ not wired — touch is polled).
 - **Buttons**: bare 2-terminal push buttons (4-leg tactile switches,
   internally paired). GPIO -> GND only, no VCC leg, no external
   resistor — ESP32 internal pull-up (`INPUT_PULLUP`). Active-low:
   idle = HIGH, pressed = LOW.
-- **Printer**: DAPPER DP-628, 58mm thermal printer mechanism + driver
-  board (Xiamen Dapu Electronic Technology). Interfaces: USB (unused —
-  data-only virtual COM, ignore it), RS232, TTL (the one we're using).
-  ESC/POS-compatible command set.
+- **Printer**: REMOVED from the build for now. Was a DAPPER DP-628 58mm
+  thermal printer (Xiamen Dapu Electronic Technology), TTL/ESC-POS. Its
+  pins (19/20/21) now belong to the touch controller. Printer code is
+  kept in main.cpp but compiled out with `ENABLE_PRINTER 0` — a future
+  printer needs new pins before re-enabling.
 
 ## Reserved GPIOs — do not reassign
 
@@ -33,18 +34,18 @@ Confirmed against the official Freenove ESP32-S3 WROOM pinout diagram.
 | Onboard "IO2" status LED | 2 | Still usable as a normal GPIO (e.g. TFT DC) — LED will just flicker along with pin activity, cosmetic only. |
 | JTAG debug pins | 41 (MTDI), 42 (MTMS) | Free to use for anything as long as you're not JTAG-debugging. Used here for TFT RST/backlight. |
 | microSD slot | 38 (SD_CMD), 39 (SD_CLK), 40 (SD_DATA) | Only reserved if the SD slot is actually used. |
-| Native USB-OTG | 19 (USB_D+), 20 (USB_D-) | Physically wired to the board's second USB-C port. Currently repurposed for the printer's UART — do not plug a cable into that port or init the USB-OTG stack while doing so. |
+| Native USB-OTG | 19 (USB_D+), 20 (USB_D-) | Physically wired to the board's second USB-C port. Currently repurposed for the touch controller (T_CS / T_DO) — do not plug a cable into that port or init the USB-OTG stack while doing so. |
 | PWM-capable pins | marked with `~` on the diagram | Most GPIO4-18 plus a few others; not a constraint, just informational. |
 
 ## Pin assignments (this project) — CURRENT / as actually wired
 
 | Component | Signal | ESP32-S3 GPIO | Status |
 |---|---|---|---|
-| DP-628 | RX (printer's data-in) | GPIO19 (ESP32 TX) | wired |
-| DP-628 | TX (printer's data-out) | GPIO20 (ESP32 RX) — **through a voltage divider/level shifter, printer TX is 5V** | wired |
-| DP-628 | DTR (busy/flow-control, active meaning TBD) | GPIO21 | wired |
-| DP-628 | GND | common GND | wired |
-| DP-628 | VH (power, 5–9V) | **external 5–9V/2A supply — never the ESP32's 5V pin.** Share GND with ESP32/printer only. | wired |
+| Touch (XPT2046) | T_CS | GPIO19 | wired |
+| Touch | T_DO (MISO) | GPIO20 — no voltage divider (the old printer divider must be removed; XPT2046 is 3.3V) | wired |
+| Touch | T_DIN | GPIO21 — its own wire, NOT shared with TFT MOSI; firmware mirrors the SPI MOSI signal onto it via the GPIO matrix | wired |
+| Touch | T_CLK | GPIO14 (shared with TFT SCK) | wired |
+| Touch | T_IRQ | not wired — touch is polled | — |
 | Button 1 (shutter) | Signal | GPIO38 | wired |
 | Button 1 | GND | GND | wired |
 | Button 2 (menu) | Signal | GPIO39 | wired |
@@ -52,16 +53,29 @@ Confirmed against the official Freenove ESP32-S3 WROOM pinout diagram.
 | Button 4 (down/select) | Signal | GPIO47 | wired |
 | Buttons 2–4 | GND | GND, same as Button 1 | wired |
 | TFT | MOSI | GPIO41 | wired |
-| TFT | SCK | GPIO14 | not yet wired |
-| TFT | CS | GPIO1 | not yet wired |1
-| TFT | DC/RS | GPIO2 — note: shares the pin with the onboard "IO2" LED, which will flicker with SPI traffic (cosmetic only) | not yet wired |
-| TFT | RST | GPIO42 | not yet wired |
-| TFT | LED (backlight) | 3.3V direct (GPIO41 now taken by MOSI, so no PWM dimming option unless moved to another free pin) | not yet wired |
+| TFT | SCK | GPIO14 | wired |
+| TFT | CS | GPIO1 | wired |
+| TFT | DC/RS | GPIO2 — note: shares the pin with the onboard "IO2" LED, which will flicker with SPI traffic (cosmetic only) | wired |
+| TFT | RST | GPIO42 | wired |
+| TFT | LED (backlight) | 3.3V direct (GPIO41 now taken by MOSI, so no PWM dimming option unless moved to another free pin) | wired |
 
 No free pins remaining without reassigning something above — GPIO39,
-40, 47 are now the menu/up/down-select UI buttons.
+40, 47 are the menu/up/down-select UI buttons, 19/20/21 are touch.
 
 ## Known gotchas (verified in prior discussion, don't relitigate)
+
+- Touch T_DIN is on GPIO21, separate from the TFT's MOSI (GPIO41). setup()
+  routes the FSPI MOSI signal to both pins with
+  `pinMatrixOutAttach(21, FSPID_OUT_IDX, ...)` — keep that if the SPI
+  init changes, or touch reads will return garbage.
+- Touch calibration constants (raw min/max, swap/invert flags) are at the
+  top of main.cpp and are defaults, not measured. Every tap logs
+  `TOUCH raw=(..) screen=(..)` to Serial for tuning.
+- Touch and the physical buttons both work: tap live view = shutter, tap a
+  menu row to select / again to open (while editing: right half +, left
+  half -, elsewhere = done), tap left/right half in the gallery to browse.
+
+Printer notes below only apply if a printer comes back:
 
 - DP-628's exact physical pin order (GND/RX/TX/DTR/VH) is **not
   confirmed from an official datasheet** — match against the labels
@@ -105,3 +119,5 @@ No free pins remaining without reassigning something above — GPIO39,
 6. Wire buttons, add capture → preview → print state machine.
 7. Wire the 3 extra UI buttons, add a settings menu and an in-memory
    (PSRAM, session-only) gallery of recent captures with reprint.
+8. Remove the printer, wire the TFT's XPT2046 touch controller on its old
+   pins, add touch controls alongside the buttons.
